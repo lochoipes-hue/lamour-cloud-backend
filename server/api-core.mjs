@@ -1732,16 +1732,19 @@ async function routeApiRequest(
     return jsonRes({ ok: true, invitation: inv });
   }
 
-  // 22. Checkout Complete & Instant Product Delivery
+  // 22. Checkout Complete (STRICTLY ADMIN-ONLY: customers MUST pay via verified VietQR bank webhook!)
   if (action === 'checkout_complete' && method === 'POST') {
     const id = sanitizeId(url.searchParams.get('id') || '');
     const idx = (core.invitations || []).findIndex(i => i.id === id);
     if (idx === -1) return jsonRes({ ok: false, error: 'Không tìm thấy thiệp cưới này' }, 404);
     const inv = core.invitations[idx];
     const user = getAuthUser(req, url, auth);
-    const token = req.headers.get('x-client-token') || url.searchParams.get('token') || '';
-    const ok = user?.role === 'admin' || (inv.clientToken && inv.clientToken === token) || (user && inv.order?.userId === user.id);
-    if (!ok) return jsonRes({ ok: false, error: 'Không có quyền xác nhận đơn này' }, 403);
+    if (user?.role !== 'admin') {
+      return jsonRes({
+        ok: false,
+        error: 'Hệ thống không hỗ trợ tự xác nhận thanh toán. Vui lòng quét mã VietQR — thiệp sẽ tự động bàn giao ngay khi MB Bank xác nhận nhận tiền.',
+      }, 403);
+    }
 
     const body = await parseJson(req);
     const name = String(body.name || user?.name || 'Khách hàng').trim();
@@ -1752,16 +1755,16 @@ async function routeApiRequest(
     }
 
     const { orderEntry } = finalizeInvitationDelivery(core, inv, {
-      userId: user?.id || inv.order?.userId || '',
-      email: body.email || user?.email || inv.order?.customerEmail || '',
+      userId: inv.order?.userId || '',
+      email: body.email || inv.order?.customerEmail || '',
       name,
       phone: phoneCheck.digits,
       packageId: body.packageId || '',
       packageName: body.packageName || '',
       amount: body.amount || 0,
       transferCode: body.transferCode || `THIEP ${id.toUpperCase()}`,
-      message: body.message || 'Khách đã chuyển tiền VietQR và nhận sản phẩm ngay',
-      gateway: 'manual-direct',
+      message: body.message || 'Admin xác nhận kích hoạt đơn hàng thủ công',
+      gateway: 'admin-manual',
     });
     core.invitations[idx] = inv;
     await saveCore(stores, core);
@@ -1973,9 +1976,17 @@ async function routeApiRequest(
     return jsonRes({ success: true, ok: true, processed: txList.length, matched }, 200);
   }
 
-  // 22e. Auto-Payment Fallback / Admin Webhook Test (STRICTLY BLOCKED for customers when real Bank Webhook is active!)
+  // 22e. Auto-Payment Admin Webhook Test (STRICTLY ADMIN-ONLY: customers can NEVER self-confirm payment!)
   if (action === 'payment_confirm_demo' && method === 'POST') {
     const user = getAuthUser(req, url, auth);
+    const isAdmin = user?.role === 'admin';
+    if (!isAdmin) {
+      return jsonRes({
+        ok: false,
+        error: 'Hệ thống chỉ tự động bàn giao sau khi ngân hàng MB Bank xác nhận đã nhận tiền qua mã VietQR.',
+      }, 403);
+    }
+
     const body = await parseJson(req);
     const code = sanitizeId(String(body.code || '').toUpperCase());
     if (!code) return jsonRes({ ok: false, error: 'Thiếu mã giao dịch' }, 400);
@@ -1983,25 +1994,12 @@ async function routeApiRequest(
     const payment = await getSinglePaymentOrder(stores, code);
     if (!payment) return jsonRes({ ok: false, error: 'Không tìm thấy đơn thanh toán' }, 404);
 
-    const webhookOn = isBankWebhookConfigured(core);
-    const isAdmin = user?.role === 'admin';
-    if (webhookOn && !isAdmin) {
-      return jsonRes({
-        ok: false,
-        error: 'Hệ thống đang bật xác minh tự động từ ngân hàng MB Bank. Vui lòng chuyển khoản đúng mã QR — hệ thống tự bàn giao ngay sau 3–5 giây khi nhận được tiền.',
-      }, 403);
-    }
-
-    const token = req.headers.get('x-client-token') || String(body.clientToken || '').trim();
-    const allowed = isAdmin || (payment.clientToken && payment.clientToken === token) || (user && payment.userId === user.id);
-    if (!allowed) return jsonRes({ ok: false, error: 'Không có quyền xác nhận đơn này' }, 403);
-
     const now = new Date().toISOString();
     payment.status = 'paid';
     payment.paidAt = payment.paidAt || now;
     payment.paidAmount = payment.amount;
-    payment.bankRef = isAdmin ? 'ADMIN_TEST_' + crypto.randomBytes(3).toString('hex').toUpperCase() : 'DIRECT_QR_' + crypto.randomBytes(3).toString('hex').toUpperCase();
-    payment.gateway = isAdmin ? 'Admin-Test-Webhook' : 'Direct-QR-SelfConfirm';
+    payment.bankRef = 'ADMIN_TEST_' + crypto.randomBytes(3).toString('hex').toUpperCase();
+    payment.gateway = 'Admin-Test-Webhook';
 
     const invIdx = (core.invitations || []).findIndex(i => i.id === payment.invitationId);
     let inv = null;
