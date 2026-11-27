@@ -1,0 +1,18 @@
+{
+  "name": "lamour-cloud-backend",
+  "version": "14.0.0",
+  "private": true,
+  "type": "module",
+  "description": "L'Amour Atelier — Standalone Render Cloud Backend (Node.js + PostgreSQL / Persistent Disk + SePay MB Bank Webhook + Gemini AI Agent)",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "start": "node server/index.mjs",
+    "test": "node test/render-backend.test.mjs"
+  },
+  "dependencies": {
+    "@google/genai": "^1.28.0",
+    "pg": "^8.13.1"
+  }
+}
