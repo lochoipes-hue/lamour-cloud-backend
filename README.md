@@ -1,9 +1,12 @@
-# L'Amour Atelier — Cloud Backend (Render Web Service)
+# DaiLo Wedding — Cloud Backend (Render Web Service)
 
-Backend Node.js độc lập (v14) cho nền tảng thiệp cưới điện tử **L'Amour Atelier**, tương thích 100% với Frontend deploy trên **Vercel** hoặc **GitHub Pages**.
+Backend Node.js độc lập (v15) cho nền tảng thiệp cưới điện tử **DaiLo Wedding**, tương thích 100% với Frontend deploy trên **Vercel** hoặc **GitHub Pages**.
 
 ## Tính năng Backend
-- API đầy đủ tại `/api` (Auth Gmail/SĐT/Facebook/Google OAuth 2.0, Studio quản lý thiệp, Live Chat 2 chiều tách key riêng, Đặt lịch tư vấn chuẩn SĐT 10 số VN, Upload ảnh/nhạc).
+- API đầy đủ tại `/api`:
+  - Xác thực **OTP 6 số bắt buộc** trước khi đăng ký bằng Số điện thoại (10 số VN) hoặc Gmail (`@gmail.com`), hỗ trợ gửi mã thật qua **Resend / Brevo / eSMS / Twilio / Webhook** và chế độ xác thực tức thì.
+  - Đăng nhập & **Liên kết / Hủy liên kết** tài khoản trực tiếp **Facebook OAuth 2.0** và **Google OAuth 2.0 / GIS** (bảo vệ chống trùng liên kết và chống mất quyền đăng nhập).
+  - Studio quản lý thiệp, Live Chat 2 chiều tách key riêng, Đặt lịch tư vấn chuẩn SĐT 10 số VN, Upload ảnh/nhạc.
 - Nhận Webhook tự động từ **SePay / Casso / PayOS** (`/api?action=payment_webhook`) -> tự mở khóa & bàn giao thiệp tức thì sau 3 giây.
 - **Gemini AI Agent** tư vấn giá + phân tích Ngũ Hành theo năm sinh (fallback thông minh nếu chưa gắn `GEMINI_API_KEY`).
 - Lưu trữ bền vững linh hoạt:
@@ -18,6 +21,10 @@ Backend Node.js độc lập (v14) cho nền tảng thiệp cưới điện tử
    - `DATABASE_URL`: chuỗi kết nối PostgreSQL từ [Neon.tech](https://neon.tech) (Free vĩnh viễn, chọn vùng **AWS Singapore**).
    - `FRONTEND_URL`: URL Vercel frontend của bạn (VD: `https://lamour-thiep-cuoi.vercel.app`).
    - `SEPAY_API_KEY`: khóa bí mật Webhook bạn tạo trên `my.sepay.vn`.
+   - `FACEBOOK_APP_ID` + `FACEBOOK_APP_SECRET`: bật đăng nhập & liên kết Facebook thật.
+   - `GOOGLE_CLIENT_ID` + `GOOGLE_CLIENT_SECRET`: bật đăng nhập & liên kết Google thật.
+   - `RESEND_API_KEY` (hoặc `BREVO_API_KEY` / `OTP_EMAIL_WEBHOOK_URL`): gửi mã OTP 6 số về Gmail thật.
+   - `ESMS_API_KEY` + `ESMS_SECRET_KEY` (hoặc `TWILIO_*` / `OTP_SMS_WEBHOOK_URL`): gửi mã OTP 6 số về SĐT thật.
    - `GEMINI_API_KEY` (tuỳ chọn): khóa miễn phí từ [aistudio.google.com/apikey](https://aistudio.google.com/apikey).
 
 ## Chạy & kiểm thử tại máy

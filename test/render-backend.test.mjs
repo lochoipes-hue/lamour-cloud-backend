@@ -102,8 +102,16 @@ async function createHttpInvoker(app) {
 const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'lamour-standalone-be-'));
 const prevKey = process.env.SEPAY_API_KEY;
 const prevFe = process.env.FRONTEND_URL;
+const prevFbId = process.env.FACEBOOK_APP_ID;
+const prevFbSec = process.env.FACEBOOK_APP_SECRET;
+const prevGId = process.env.GOOGLE_CLIENT_ID;
+const prevGSec = process.env.GOOGLE_CLIENT_SECRET;
 process.env.SEPAY_API_KEY = 'standalone_sepay_secret_key';
 process.env.FRONTEND_URL = 'https://lamour-thiep-cuoi.vercel.app';
+process.env.FACEBOOK_APP_ID = '112233445566';
+process.env.FACEBOOK_APP_SECRET = 'fb_sec_standalone';
+process.env.GOOGLE_CLIENT_ID = '12345.apps.googleusercontent.com';
+process.env.GOOGLE_CLIENT_SECRET = 'g_sec_standalone';
 
 let app = null;
 try {
@@ -155,6 +163,16 @@ try {
   });
   assert.equal(res.status, 200);
   const pay = await res.json();
+  assert.ok(pay.payment.code.startsWith('DAILO'), 'Payment code must use DAILO prefix');
+
+  // Verify brand auto-migration to DaiLo Wedding
+  res = await client.request('/api?action=public_store');
+  assert.equal(res.status, 200);
+  assert.equal((await res.json()).settings.brandName, 'DaiLo Wedding');
+
+  // Unpaid draft guest view must return 403 before payment
+  res = await client.request(`/api?action=get_invitation&mode=guest&id=${pay.invitationId}`);
+  assert.equal(res.status, 403);
 
   res = await client.request('/api?action=payment_webhook', {
     method: 'POST',
@@ -163,6 +181,10 @@ try {
   });
   assert.equal(res.status, 200);
   assert.equal((await res.json()).matched[0].status, 'paid');
+
+  // After payment, guest view returns 200
+  res = await client.request(`/api?action=get_invitation&mode=guest&id=${pay.invitationId}`);
+  assert.equal(res.status, 200);
 
   // Verify smart local chatbot fallback works gracefully even if GEMINI_API_KEY is unset
   await client.request('/api?action=chat_send', {
@@ -204,6 +226,51 @@ try {
   await pgStore.close();
   ok('Standalone PostgreSQL store (Neon TLS + idle-error crash safety) & malformed Host hardening verified');
 
+  // Mandatory OTP registration + authenticated OAuth link init in standalone backend
+  res = await client.request('/api?action=auth_register', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ provider: 'phone', name: 'No OTP', phone: '0981112233', password: 'Password123' }),
+  });
+  assert.equal(res.status, 400);
+  res = await client.request('/api?action=auth_otp_send', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ channel: 'phone', target: '0981112233', purpose: 'register' }),
+  });
+  assert.equal(res.status, 200);
+  const otpInfo = await res.json();
+  assert.match(otpInfo.previewCode, /^\d{6}$/);
+  res = await client.request('/api?action=auth_otp_verify', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ channel: 'phone', target: '0981112233', code: otpInfo.previewCode, purpose: 'register' }),
+  });
+  assert.equal(res.status, 200);
+  const otpVer = await res.json();
+  res = await client.request('/api?action=auth_register', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      provider: 'phone',
+      name: 'Standalone User',
+      phone: '0981112233',
+      password: 'Password123',
+      otpVerificationToken: otpVer.verificationToken,
+    }),
+  });
+  assert.equal(res.status, 200);
+  const regOut = await res.json();
+  res = await client.request('/api?action=oauth_link_init', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-Auth-Token': regOut.token },
+    body: JSON.stringify({ provider: 'google', returnTo: 'https://lamour-thiep-cuoi.vercel.app/' }),
+  });
+  assert.equal(res.status, 200);
+  const gInit = await res.json();
+  assert.ok(gInit.redirectUrl.startsWith('https://accounts.google.com/o/oauth2/v2/auth?'));
+  ok('Standalone mandatory OTP registration & Facebook/Google OAuth link init verified');
+
   console.log(`\nSTANDALONE RENDER BACKEND AUDIT SUMMARY: Passed ${passed} / ${passed} | Failed: 0`);
 } finally {
   if (app) await app.close().catch(() => {});
@@ -212,4 +279,12 @@ try {
   else process.env.SEPAY_API_KEY = prevKey;
   if (prevFe === undefined) delete process.env.FRONTEND_URL;
   else process.env.FRONTEND_URL = prevFe;
+  if (prevFbId === undefined) delete process.env.FACEBOOK_APP_ID;
+  else process.env.FACEBOOK_APP_ID = prevFbId;
+  if (prevFbSec === undefined) delete process.env.FACEBOOK_APP_SECRET;
+  else process.env.FACEBOOK_APP_SECRET = prevFbSec;
+  if (prevGId === undefined) delete process.env.GOOGLE_CLIENT_ID;
+  else process.env.GOOGLE_CLIENT_ID = prevGId;
+  if (prevGSec === undefined) delete process.env.GOOGLE_CLIENT_SECRET;
+  else process.env.GOOGLE_CLIENT_SECRET = prevGSec;
 }

@@ -1,5 +1,5 @@
 /**
- * L'Amour Atelier — Render Persistent Storage Adapters (v14)
+ * DaiLo Wedding — Render Persistent Storage Adapters (v15)
  * Triển khai cùng interface với @netlify/blobs (get, getWithMetadata, set, setJSON, delete, list)
  * Hỗ trợ 2 chế độ bền vững:
  *   1. PostgreSQL (DATABASE_URL — khuyên dùng trên Render Free kèm Neon / Supabase Postgres 0đ vĩnh viễn)
@@ -282,7 +282,7 @@ export async function createPostgresStores(
   // suspends idle compute or resets an idle pooled TCP socket.
   if (typeof pool.on === 'function') {
     pool.on('error', err => {
-      console.error("[L'Amour Postgres Pool] Idle client error (auto-recovering):", err?.message || err);
+      console.error('[DaiLo Wedding Postgres Pool] Idle client error (auto-recovering):', err?.message || err);
     });
   }
 

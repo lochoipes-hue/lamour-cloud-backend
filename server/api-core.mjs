@@ -1,9 +1,9 @@
 /**
- * L'Amour Atelier — Platform-Agnostic Cloud Backend API Core (v14)
+ * DaiLo Wedding — Platform-Agnostic Cloud Backend API Core (v15)
  * - Chạy độc lập trên Render (Node.js Web Service + PostgreSQL / Persistent Disk) và Netlify Functions
  * - Tách riêng mỗi hội thoại Live Chat, Đặt Lịch, Đơn Thanh Toán thành key độc lập để 0 xung đột đồng thời
- * - Xác thực Gmail nghiêm ngặt (@gmail.com + xác nhận + OTP Gmail qua Resend)
- * - Đăng nhập nhanh liên kết thẳng Facebook OAuth 2.0 & Google OAuth 2.0 (hỗ trợ cross-origin Vercel <-> Render)
+ * - Xác thực OTP 6 số bắt buộc trước khi đăng ký bằng Số điện thoại hoặc Gmail (hỗ trợ Resend / Brevo / eSMS / Twilio / Webhook & chế độ xác thực tức thì)
+ * - Đăng nhập & Liên kết tài khoản trực tiếp Facebook OAuth 2.0 & Google OAuth 2.0 / GIS (hỗ trợ cross-origin Vercel <-> Render)
  * - Nhận Webhook ngân hàng SePay / Casso / PayOS tự động bàn giao thiệp tức thì
  */
 
@@ -27,10 +27,14 @@ function buildTrialConfigServer(days = 1) {
     expiresAt: new Date(now + safeDays * 86400000).toISOString(),
     limits: {
       maxPhotos: safeDays === 1 ? 3 : safeDays === 2 ? 5 : 6,
+      maxGuests: safeDays === 1 ? 5 : safeDays === 2 ? 10 : 15,
       allowGiftQr: false,
       allowMusicChange: false,
       allowGuestLinks: false,
+      allowGuestPersonalLinks: false,
       allowCustomQuestions: false,
+      allowCustomRsvpFields: false,
+      allowSectionToggle: false,
     },
   };
 }
@@ -244,10 +248,13 @@ function getStores(overrideStores = null) {
 }
 
 function ensureAdminAndDefaults(core, auth) {
+  let coreMigrated = false;
+  let authMigrated = false;
+  const legacyBrandRe = /l['’]?amour(\s+atelier)?/gi;
   const nextCore = core || {
-    version: 11,
+    version: 15,
     settings: {
-      brandName: "L'Amour Atelier",
+      brandName: 'DaiLo Wedding',
       hotline: '0354 248 177',
       phoneRaw: '0354248177',
       zaloUrl: 'https://zalo.me/0354248177',
@@ -263,6 +270,12 @@ function ensureAdminAndDefaults(core, auth) {
     chatbotConfig: JSON.parse(JSON.stringify(DEFAULT_CHATBOT_CONFIG)),
   };
   nextCore.settings = nextCore.settings || {};
+  if (!nextCore.settings.brandName || /^\s*l['’]?amour(\s+atelier)?\s*$/i.test(String(nextCore.settings.brandName))) {
+    if (nextCore.settings.brandName !== 'DaiLo Wedding') {
+      nextCore.settings.brandName = 'DaiLo Wedding';
+      coreMigrated = true;
+    }
+  }
   if (!Array.isArray(nextCore.settings.packages) || !nextCore.settings.packages.length) {
     nextCore.settings.packages = JSON.parse(JSON.stringify(DEFAULT_PACKAGES_FALLBACK));
   }
@@ -271,13 +284,20 @@ function ensureAdminAndDefaults(core, auth) {
   if (!Array.isArray(nextCore.bookings)) nextCore.bookings = [];
   if (!Array.isArray(nextCore.consultations)) nextCore.consultations = [];
   if (!nextCore.chatbotConfig) nextCore.chatbotConfig = JSON.parse(JSON.stringify(DEFAULT_CHATBOT_CONFIG));
-  nextCore.version = Math.max(Number(nextCore.version || 0), 11);
+  for (const field of ['greeting', 'aiSystemPrompt', 'fallbackReply']) {
+    if (typeof nextCore.chatbotConfig[field] === 'string' && /l['’]?amour(\s+atelier)?/i.test(nextCore.chatbotConfig[field])) {
+      nextCore.chatbotConfig[field] = nextCore.chatbotConfig[field].replace(legacyBrandRe, 'DaiLo Wedding');
+      coreMigrated = true;
+    }
+  }
+  nextCore.version = Math.max(Number(nextCore.version || 0), 15);
 
-  const nextAuth = auth || { users: [], sessions: {}, oauthStates: {}, gmailOtps: {} };
+  const nextAuth = auth || { users: [], sessions: {}, oauthStates: {}, gmailOtps: {}, otps: {} };
   if (!Array.isArray(nextAuth.users)) nextAuth.users = [];
   if (!nextAuth.sessions || typeof nextAuth.sessions !== 'object') nextAuth.sessions = {};
   if (!nextAuth.oauthStates || typeof nextAuth.oauthStates !== 'object') nextAuth.oauthStates = {};
   if (!nextAuth.gmailOtps || typeof nextAuth.gmailOtps !== 'object') nextAuth.gmailOtps = {};
+  if (!nextAuth.otps || typeof nextAuth.otps !== 'object') nextAuth.otps = {};
 
   let admin = nextAuth.users.find(u => normalizeEmail(u.email) === ADMIN_EMAIL);
   if (!admin) {
@@ -285,22 +305,30 @@ function ensureAdminAndDefaults(core, auth) {
       id: 'usr_admin_master',
       role: 'admin',
       provider: 'gmail',
-      name: 'Quản Trị Viên Studio',
+      name: 'Quản Trị Viên DaiLo Wedding',
       email: ADMIN_EMAIL,
       phone: '0354248177',
       emailVerified: true,
+      hasPassword: true,
       passwordSha256: ADMIN_PASS_SHA256,
       createdAt: new Date().toISOString(),
     };
     nextAuth.users.unshift(admin);
+    authMigrated = true;
   } else {
     admin.role = 'admin';
     admin.emailVerified = true;
+    admin.hasPassword = true;
+    if (typeof admin.name === 'string' && /l['’]?amour(\s+atelier)?/i.test(admin.name)) {
+      admin.name = admin.name.replace(legacyBrandRe, 'DaiLo Wedding');
+      authMigrated = true;
+    }
     if (!admin.passwordHash && !admin.passwordSha256) {
       admin.passwordSha256 = ADMIN_PASS_SHA256;
+      authMigrated = true;
     }
   }
-  return { core: nextCore, auth: nextAuth };
+  return { core: nextCore, auth: nextAuth, coreMigrated, authMigrated };
 }
 
 async function loadState(stores) {
@@ -309,12 +337,17 @@ async function loadState(stores) {
     stores.dataStore.get('auth', { type: 'json' }),
   ]);
   const initialized = Boolean(rawCore);
-  const { core, auth } = ensureAdminAndDefaults(rawCore, rawAuth);
+  const { core, auth, coreMigrated, authMigrated } = ensureAdminAndDefaults(rawCore, rawAuth);
   if (!initialized) {
     await Promise.all([
       stores.dataStore.setJSON('core', core),
       stores.dataStore.setJSON('auth', auth),
     ]);
+  } else {
+    const writes = [];
+    if (coreMigrated) writes.push(stores.dataStore.setJSON('core', core));
+    if (authMigrated) writes.push(stores.dataStore.setJSON('auth', auth));
+    if (writes.length) await Promise.all(writes);
   }
   return { core, auth };
 }
@@ -338,6 +371,10 @@ async function saveAuth(stores, auth) {
   }
   for (const [k, v] of Object.entries(auth.gmailOtps || {})) {
     if (!v || (v.expiresAt || 0) < now) delete auth.gmailOtps[k];
+  }
+  for (const [k, v] of Object.entries(auth.otps || {})) {
+    const maxExp = Math.max(Number(v?.expiresAt || 0), Number(v?.verifiedExpiresAt || 0));
+    if (!v || maxExp < now) delete auth.otps[k];
   }
   await stores.dataStore.setJSON('auth', auth);
 }
@@ -420,7 +457,7 @@ function isBankWebhookConfigured(core) {
 }
 
 function extractPaymentCodeFromText(text) {
-  const m = String(text || '').toUpperCase().match(/LAMOUR[A-Z0-9]{6,10}/);
+  const m = String(text || '').toUpperCase().match(/(?:DAILO|LAMOUR)[A-Z0-9]{6,10}/);
   return m ? m[0] : '';
 }
 
@@ -443,7 +480,7 @@ function finalizeInvitationDelivery(core, inv, payload = {}) {
   const matchedPkg = pkgs.find(p => p.id === payload.packageId || p.name === payload.packageName);
   const caps = matchedPkg?.capabilities || null;
   const now = new Date().toISOString();
-  const transferCode = String(payload.transferCode || `LAMOUR${String(inv.id || '').replace(/[^A-Z0-9]/gi, '').toUpperCase().slice(0, 6)}`);
+  const transferCode = String(payload.transferCode || `DAILO${String(inv.id || '').replace(/[^A-Z0-9]/gi, '').toUpperCase().slice(0, 6)}`);
 
   const existingOrder = (core.consultations || []).find(
     c => c.kind === 'qr_order' && c.transferCode === transferCode && c.status === 'paid'
@@ -616,20 +653,341 @@ function createSession(auth, userId) {
   return token;
 }
 
+function timingSafeEqualStr(a, b) {
+  const bA = Buffer.from(String(a || ''), 'utf8');
+  const bB = Buffer.from(String(b || ''), 'utf8');
+  if (bA.length === 0 || bA.length !== bB.length) return false;
+  return crypto.timingSafeEqual(bA, bB);
+}
+
+function getHttpWebhookUrl(raw) {
+  try {
+    const u = new URL(String(raw || '').trim());
+    if (u.protocol === 'https:' || u.protocol === 'http:') return u.toString();
+  } catch (_) {}
+  return '';
+}
+
+function hasEmailOtpGateway(core) {
+  return Boolean(
+    getEnv('RESEND_API_KEY')
+    || getEnv('BREVO_API_KEY')
+    || getHttpWebhookUrl(getEnv('OTP_EMAIL_WEBHOOK_URL') || core?.settings?.otpEmailWebhookUrl)
+  );
+}
+
+function hasSmsOtpGateway(core) {
+  return Boolean(
+    (getEnv('ESMS_API_KEY') && getEnv('ESMS_SECRET_KEY'))
+    || (getEnv('TWILIO_ACCOUNT_SID') && getEnv('TWILIO_AUTH_TOKEN') && getEnv('TWILIO_FROM_NUMBER'))
+    || getHttpWebhookUrl(getEnv('OTP_SMS_WEBHOOK_URL') || core?.settings?.otpSmsWebhookUrl)
+  );
+}
+
+function parseFromHeader(rawFrom, fallbackName = 'DaiLo Wedding', fallbackEmail = 'onboarding@resend.dev') {
+  const s = String(rawFrom || '').trim();
+  const m = s.match(/^([^<]+)<\s*([^>\s]+)\s*>$/);
+  if (m) return { name: m[1].trim() || fallbackName, email: m[2].trim() || fallbackEmail };
+  if (s.includes('@')) return { name: fallbackName, email: s };
+  return { name: fallbackName, email: fallbackEmail };
+}
+
+function escapeHtmlServer(str) {
+  return String(str ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+async function externalFetchSafe(url, init = {}, timeoutMs = 12000) {
+  const signal = typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function'
+    ? AbortSignal.timeout(timeoutMs)
+    : undefined;
+  return await fetch(url, { ...init, ...(signal ? { signal } : {}) });
+}
+
+function isStrictVerifiedFlag(val) {
+  return val === true || String(val || '').toLowerCase() === 'true';
+}
+
+async function dispatchEmailOtp(core, { email, code, purpose = 'register' }) {
+  const brand = String(core?.settings?.brandName || 'DaiLo Wedding').trim() || 'DaiLo Wedding';
+  const brandSafe = escapeHtmlServer(brand);
+  const actionText = purpose === 'login' ? 'đăng nhập tài khoản' : 'đăng ký tài khoản';
+  const subject = `Mã xác thực ${brand}: ${code}`;
+  const html = `<div style="font-family:Arial,sans-serif;max-width:480px;margin:0 auto;padding:24px;border:1px solid #ece5dc;border-radius:12px;"><h3 style="margin:0 0 12px;color:#8f1d32;">${brandSafe}</h3><p>Xin chào,</p><p>Mã xác thực 6 số để ${actionText} tại <strong>${brandSafe}</strong> của bạn là:</p><div style="font-size:30px;font-weight:700;letter-spacing:6px;color:#8f1d32;padding:12px 16px;background:#fdf6f7;border-radius:10px;text-align:center;margin:14px 0;">${code}</div><p style="font-size:13px;color:#666;">Mã có hiệu lực trong 5 phút. Tuyệt đối không chia sẻ mã này cho người khác.</p></div>`;
+
+  const resendKey = getEnv('RESEND_API_KEY');
+  if (resendKey) {
+    try {
+      const fromAddr = getEnv('MAIL_FROM') || `${brand} <onboarding@resend.dev>`;
+      const mailRes = await externalFetchSafe('https://api.resend.com/emails', {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${resendKey}`,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({ from: fromAddr, to: [email], subject, html }),
+      });
+      if (!mailRes.ok) {
+        return { ok: false, configured: true, provider: 'resend', error: 'Không gửi được email xác thực qua Resend. Vui lòng kiểm tra lại cấu hình hoặc địa chỉ Gmail.' };
+      }
+      return { ok: true, configured: true, delivery: 'email', provider: 'resend' };
+    } catch (_) {
+      return { ok: false, configured: true, provider: 'resend', error: 'Lỗi kết nối dịch vụ gửi Email (Resend). Vui lòng thử lại sau.' };
+    }
+  }
+
+  const brevoKey = getEnv('BREVO_API_KEY');
+  if (brevoKey) {
+    try {
+      const sender = parseFromHeader(getEnv('MAIL_FROM'), brand, 'no-reply@dailowedding.vn');
+      const mailRes = await externalFetchSafe('https://api.brevo.com/v3/smtp/email', {
+        method: 'POST',
+        headers: {
+          'api-key': brevoKey,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          sender,
+          to: [{ email }],
+          subject,
+          htmlContent: html,
+        }),
+      });
+      if (!mailRes.ok) {
+        return { ok: false, configured: true, provider: 'brevo', error: 'Không gửi được email xác thực qua Brevo. Vui lòng thử lại sau.' };
+      }
+      return { ok: true, configured: true, delivery: 'email', provider: 'brevo' };
+    } catch (_) {
+      return { ok: false, configured: true, provider: 'brevo', error: 'Lỗi kết nối dịch vụ gửi Email (Brevo). Vui lòng thử lại sau.' };
+    }
+  }
+
+  const webhookUrl = getHttpWebhookUrl(getEnv('OTP_EMAIL_WEBHOOK_URL') || core?.settings?.otpEmailWebhookUrl);
+  if (webhookUrl) {
+    try {
+      const headers = { 'content-type': 'application/json' };
+      const secret = getEnv('OTP_WEBHOOK_SECRET');
+      if (secret) headers['x-webhook-secret'] = secret;
+      const whRes = await externalFetchSafe(webhookUrl, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ channel: 'gmail', target: email, code, purpose, brandName: brand, subject, html }),
+      });
+      if (!whRes.ok) {
+        return { ok: false, configured: true, provider: 'webhook', error: 'Không gửi được email xác thực qua Webhook Email.' };
+      }
+      return { ok: true, configured: true, delivery: 'email', provider: 'webhook' };
+    } catch (_) {
+      return { ok: false, configured: true, provider: 'webhook', error: 'Lỗi kết nối Webhook gửi Email OTP. Vui lòng thử lại sau.' };
+    }
+  }
+
+  return { ok: false, configured: false, provider: '' };
+}
+
+async function dispatchSmsOtp(core, { phone, code, purpose = 'register' }) {
+  const brand = String(core?.settings?.brandName || 'DaiLo Wedding').trim() || 'DaiLo Wedding';
+  const smsText = `${brand}: Ma xac thuc OTP ${purpose === 'login' ? 'dang nhap' : 'dang ky'} cua ban la ${code} (hieu luc 5 phut).`;
+
+  const esmsKey = getEnv('ESMS_API_KEY');
+  const esmsSecret = getEnv('ESMS_SECRET_KEY');
+  if (esmsKey && esmsSecret) {
+    try {
+      const brandName = getEnv('ESMS_BRANDNAME') || 'Baotrixemay';
+      const smsRes = await externalFetchSafe('https://rest.esms.vn/MainService.svc/json/SendMultipleMessage_V4_post_json/', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          ApiKey: esmsKey,
+          SecretKey: esmsSecret,
+          Phone: phone,
+          Content: smsText,
+          Brandname: brandName,
+          SmsType: '2',
+        }),
+      });
+      const data = await smsRes.json().catch(() => ({}));
+      if (!smsRes.ok || String(data?.CodeResult || '') !== '100') {
+        return { ok: false, configured: true, provider: 'esms', error: 'Không gửi được SMS xác thực qua eSMS. Vui lòng thử lại sau.' };
+      }
+      return { ok: true, configured: true, delivery: 'sms', provider: 'esms' };
+    } catch (_) {
+      return { ok: false, configured: true, provider: 'esms', error: 'Lỗi kết nối dịch vụ SMS (eSMS). Vui lòng thử lại sau.' };
+    }
+  }
+
+  const twSid = getEnv('TWILIO_ACCOUNT_SID');
+  const twToken = getEnv('TWILIO_AUTH_TOKEN');
+  const twFrom = getEnv('TWILIO_FROM_NUMBER');
+  if (twSid && twToken && twFrom) {
+    try {
+      const e164Phone = phone.startsWith('0') ? `+84${phone.slice(1)}` : phone;
+      const basic = Buffer.from(`${twSid}:${twToken}`).toString('base64');
+      const smsRes = await externalFetchSafe(`https://api.twilio.com/2010-04-01/Accounts/${encodeURIComponent(twSid)}/Messages.json`, {
+        method: 'POST',
+        headers: {
+          authorization: `Basic ${basic}`,
+          'content-type': 'application/x-www-form-urlencoded',
+        },
+        body: new URLSearchParams({ From: twFrom, To: e164Phone, Body: smsText }),
+      });
+      if (!smsRes.ok) {
+        return { ok: false, configured: true, provider: 'twilio', error: 'Không gửi được SMS xác thực qua Twilio. Vui lòng thử lại sau.' };
+      }
+      return { ok: true, configured: true, delivery: 'sms', provider: 'twilio' };
+    } catch (_) {
+      return { ok: false, configured: true, provider: 'twilio', error: 'Lỗi kết nối dịch vụ SMS (Twilio). Vui lòng thử lại sau.' };
+    }
+  }
+
+  const webhookUrl = getHttpWebhookUrl(getEnv('OTP_SMS_WEBHOOK_URL') || core?.settings?.otpSmsWebhookUrl);
+  if (webhookUrl) {
+    try {
+      const headers = { 'content-type': 'application/json' };
+      const secret = getEnv('OTP_WEBHOOK_SECRET');
+      if (secret) headers['x-webhook-secret'] = secret;
+      const whRes = await externalFetchSafe(webhookUrl, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ channel: 'phone', target: phone, code, purpose, brandName: brand, message: smsText }),
+      });
+      if (!whRes.ok) {
+        return { ok: false, configured: true, provider: 'webhook', error: 'Không gửi được SMS xác thực qua Webhook SMS.' };
+      }
+      return { ok: true, configured: true, delivery: 'sms', provider: 'webhook' };
+    } catch (_) {
+      return { ok: false, configured: true, provider: 'webhook', error: 'Lỗi kết nối Webhook gửi SMS OTP. Vui lòng thử lại sau.' };
+    }
+  }
+
+  return { ok: false, configured: false, provider: '' };
+}
+
+function makeOtpKey(purpose, channel, target) {
+  return `${purpose}:${channel}:${target}`;
+}
+
+function hashOtpCode(key, code) {
+  return sha256Hex(`dailo_otp_v15:${key}:${String(code || '').trim()}`);
+}
+
+async function verifyFacebookAccessToken(accessToken, expectedAppId = '') {
+  const fbToken = String(accessToken || '').trim();
+  const cleanAppId = String(expectedAppId || '').trim();
+  if (!cleanAppId) {
+    return { ok: false, status: 400, error: 'Facebook OAuth chưa cấu hình FACEBOOK_APP_ID trên máy chủ.' };
+  }
+  if (!fbToken) return { ok: false, status: 400, error: 'Thiếu mã đăng nhập từ Facebook' };
+  try {
+    const appRes = await externalFetchSafe(`https://graph.facebook.com/app?access_token=${encodeURIComponent(fbToken)}`);
+    const appData = await appRes.json().catch(() => ({}));
+    if (!appRes.ok || String(appData?.id || '') !== cleanAppId) {
+      return { ok: false, status: 401, error: 'Mã xác thực Facebook không thuộc ứng dụng DaiLo Wedding' };
+    }
+    const fbRes = await externalFetchSafe(`https://graph.facebook.com/me?fields=id,name,email,picture.type(large)&access_token=${encodeURIComponent(fbToken)}`);
+    if (!fbRes.ok) return { ok: false, status: 401, error: 'Không xác thực được phiên đăng nhập Facebook' };
+    const profile = await fbRes.json().catch(() => ({}));
+    if (!profile?.id) return { ok: false, status: 401, error: 'Tài khoản Facebook không hợp lệ' };
+    return {
+      ok: true,
+      profile: {
+        id: String(profile.id),
+        name: String(profile.name || 'Khách Facebook').slice(0, 100),
+        email: normalizeEmail(profile.email || ''),
+        avatarUrl: String(profile.picture?.data?.url || '').slice(0, 500),
+      },
+    };
+  } catch (_) {
+    return { ok: false, status: 502, error: 'Không kết nối được tới máy chủ xác thực Facebook. Vui lòng thử lại sau.' };
+  }
+}
+
+async function verifyGoogleCredential({ idToken = '', accessToken = '' }, expectedClientId = '') {
+  const cleanClientId = String(expectedClientId || '').trim();
+  if (!cleanClientId) {
+    return { ok: false, status: 400, error: 'Google OAuth chưa cấu hình GOOGLE_CLIENT_ID trên máy chủ.' };
+  }
+  const cleanIdToken = String(idToken || '').trim();
+  const cleanAccessToken = String(accessToken || '').trim();
+  if (!cleanIdToken && !cleanAccessToken) {
+    return { ok: false, status: 400, error: 'Thiếu mã xác thực từ Google' };
+  }
+  try {
+    if (cleanIdToken) {
+      const res = await externalFetchSafe(`https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(cleanIdToken)}`);
+      const info = await res.json().catch(() => ({}));
+      if (!res.ok || !info?.sub || !info?.email) {
+        return { ok: false, status: 401, error: 'Không xác thực được mã đăng nhập Google' };
+      }
+      if (String(info.aud || '') !== cleanClientId) {
+        return { ok: false, status: 401, error: 'Mã Google không khớp Google Client ID của hệ thống' };
+      }
+      if (!isStrictVerifiedFlag(info.email_verified)) {
+        return { ok: false, status: 401, error: 'Tài khoản Google chưa xác minh địa chỉ Gmail' };
+      }
+      return {
+        ok: true,
+        profile: {
+          sub: String(info.sub),
+          name: String(info.name || info.email.split('@')[0]).slice(0, 100),
+          email: normalizeEmail(info.email),
+          avatarUrl: String(info.picture || '').slice(0, 500),
+        },
+      };
+    }
+    const tiRes = await externalFetchSafe(`https://oauth2.googleapis.com/tokeninfo?access_token=${encodeURIComponent(cleanAccessToken)}`);
+    const ti = await tiRes.json().catch(() => ({}));
+    if (!tiRes.ok || String(ti?.aud || ti?.azp || '') !== cleanClientId) {
+      return { ok: false, status: 401, error: 'Phiên Google không khớp Google Client ID của hệ thống' };
+    }
+    const profRes = await externalFetchSafe('https://www.googleapis.com/oauth2/v3/userinfo', {
+      headers: { authorization: `Bearer ${cleanAccessToken}` },
+    });
+    const profile = await profRes.json().catch(() => ({}));
+    const gEmail = normalizeEmail(profile.email || '');
+    const gSub = String(profile.sub || '').trim();
+    if (!profRes.ok || !gSub || !gEmail || !isStrictVerifiedFlag(profile.email_verified)) {
+      return { ok: false, status: 401, error: 'Google chưa xác minh địa chỉ Gmail hoặc hồ sơ không hợp lệ' };
+    }
+    return {
+      ok: true,
+      profile: {
+        sub: gSub,
+        name: String(profile.name || gEmail.split('@')[0]).slice(0, 100),
+        email: gEmail,
+        avatarUrl: String(profile.picture || '').slice(0, 500),
+      },
+    };
+  } catch (_) {
+    return { ok: false, status: 502, error: 'Không kết nối được tới máy chủ xác thực Google. Vui lòng thử lại sau.' };
+  }
+}
+
 function getOAuthInfo(core, origin) {
   const fbAppId = getEnv('FACEBOOK_APP_ID') || String(core?.settings?.facebookAppId || '').trim();
   const fbSecret = getEnv('FACEBOOK_APP_SECRET');
   const gClientId = getEnv('GOOGLE_CLIENT_ID') || String(core?.settings?.googleClientId || '').trim();
   const gSecret = getEnv('GOOGLE_CLIENT_SECRET');
-  const hasResend = Boolean(getEnv('RESEND_API_KEY'));
+  const gmailOtpConfigured = hasEmailOtpGateway(core);
+  const phoneOtpConfigured = hasSmsOtpGateway(core);
   return {
     facebookAppId: fbAppId,
     facebookServerOAuth: Boolean(fbAppId && fbSecret),
     facebookConfigured: Boolean(fbAppId),
     googleClientId: gClientId,
     googleServerOAuth: Boolean(gClientId && gSecret),
-    googleConfigured: Boolean(gClientId && gSecret),
-    gmailOtpEnabled: hasResend,
+    googleConfigured: Boolean(gClientId),
+    googleClientOnly: Boolean(gClientId && !gSecret),
+    gmailOtpConfigured,
+    phoneOtpConfigured,
+    gmailOtpEnabled: true,
+    phoneOtpEnabled: true,
+    otpLoginGmailEnabled: gmailOtpConfigured,
+    otpLoginPhoneEnabled: phoneOtpConfigured,
     facebookCallbackUrl: `${origin}/api?action=oauth_facebook_callback`,
     googleCallbackUrl: `${origin}/api?action=oauth_google_callback`,
   };
@@ -660,7 +1018,7 @@ function buildAiAgentSystemPrompt(core, userText) {
 
   return `${customTone}
 
-THÔNG TIN CHÍNH THỨC CỦA STUDIO (${s.brandName || "L'Amour Atelier"}):
+THÔNG TIN CHÍNH THỨC CỦA STUDIO (${s.brandName || 'DaiLo Wedding'}):
 - Hotline / Zalo Quản Lý: ${s.hotline || '0354 248 177'} (${s.zaloUrl || 'https://zalo.me/0354248177'})
 - Thanh toán VietQR: ${s.paymentBankName || 'MB Bank — Ngân hàng Quân Đội'}, STK: ${s.paymentAccountNo || '0354248177'}
 - Quy trình: Chọn mẫu -> Tự chỉnh ảnh, chữ, ngày giờ -> Sang trang chuyển tiền VietQR -> Xác nhận xong nhận Link Thiệp chính thức + Mã QR ngay lập tức.
@@ -828,6 +1186,8 @@ async function routeApiRequest(
     const safeSettings = { ...(core.settings || {}) };
     delete safeSettings.adminPin;
     delete safeSettings.paymentWebhookSecret;
+    delete safeSettings.otpEmailWebhookUrl;
+    delete safeSettings.otpSmsWebhookUrl;
     return jsonRes({
       ok: true,
       initialized: true,
@@ -840,56 +1200,207 @@ async function routeApiRequest(
     });
   }
 
-  // 5. Gmail OTP verification request (real email via Resend when RESEND_API_KEY is configured)
-  if (action === 'auth_gmail_otp_send' && method === 'POST') {
+  // 5. OTP Send (Mandatory for Gmail & 10-digit VN Phone registration, plus real-gateway OTP login)
+  if ((action === 'auth_otp_send' || action === 'auth_gmail_otp_send') && method === 'POST') {
     const body = await parseJson(req);
-    const email = normalizeEmail(body.email);
-    if (!isStrictGmail(email)) {
-      return jsonRes({ ok: false, error: 'Vui lòng nhập đúng địa chỉ Gmail hợp lệ (kết thúc bằng @gmail.com)' }, 400);
+    const channel = action === 'auth_gmail_otp_send' ? 'gmail' : String(body.channel || 'gmail').trim().toLowerCase();
+    const purpose = String(body.purpose || 'register').trim().toLowerCase();
+    if (channel !== 'gmail' && channel !== 'phone') {
+      return jsonRes({ ok: false, error: 'Kênh gửi mã chỉ hỗ trợ Gmail hoặc Số điện thoại.' }, 400);
     }
-    if ((auth.users || []).some(u => normalizeEmail(u.email) === email)) {
-      return jsonRes({ ok: false, error: 'Gmail này đã được đăng ký tài khoản, vui lòng đăng nhập' }, 409);
+    if (purpose !== 'register' && purpose !== 'login') {
+      return jsonRes({ ok: false, error: 'Mục đích xác thực OTP không hợp lệ.' }, 400);
     }
-    const resendKey = getEnv('RESEND_API_KEY');
-    if (!resendKey) {
-      return jsonRes({ ok: false, otpSupported: false, error: 'Hệ thống chưa bật gửi mã OTP tự động (cần RESEND_API_KEY)' }, 400);
+
+    let target = '';
+    if (channel === 'gmail') {
+      target = normalizeEmail(body.target || body.email || '');
+      if (!isStrictGmail(target)) {
+        return jsonRes({ ok: false, error: 'Vui lòng nhập đúng địa chỉ Gmail hợp lệ (kết thúc bằng @gmail.com).' }, 400);
+      }
+    } else {
+      const phoneCheck = validateVnPhone10(body.target || body.phone || '');
+      if (!phoneCheck.ok) {
+        return jsonRes({ ok: false, error: phoneCheck.error }, 400);
+      }
+      target = phoneCheck.digits;
     }
-    const code = String(crypto.randomInt(100000, 999999));
-    auth.gmailOtps[email] = { code, expiresAt: Date.now() + 10 * 60 * 1000 };
+
+    const existingUser = (auth.users || []).find(u =>
+      channel === 'gmail' ? normalizeEmail(u.email) === target : sanitizePhone(u.phone) === target
+    );
+
+    if (purpose === 'register' && existingUser) {
+      return jsonRes({
+        ok: false,
+        error: channel === 'gmail'
+          ? 'Gmail này đã được đăng ký tài khoản, vui lòng chuyển sang Đăng Nhập.'
+          : 'Số điện thoại này đã được đăng ký tài khoản, vui lòng chuyển sang Đăng Nhập.',
+      }, 409);
+    }
+
+    if (purpose === 'login') {
+      if (!existingUser) {
+        return jsonRes({
+          ok: false,
+          error: channel === 'gmail'
+            ? 'Gmail này chưa được đăng ký tài khoản.'
+            : 'Số điện thoại này chưa được đăng ký tài khoản.',
+        }, 404);
+      }
+      if (existingUser.role === 'admin' || normalizeEmail(existingUser.email) === ADMIN_EMAIL) {
+        return jsonRes({ ok: false, error: 'Tài khoản Quản trị bắt buộc đăng nhập bằng Gmail và Mật khẩu.' }, 403);
+      }
+      const liveGateway = channel === 'gmail' ? hasEmailOtpGateway(core) : hasSmsOtpGateway(core);
+      if (!liveGateway) {
+        return jsonRes({
+          ok: false,
+          otpLoginSupported: false,
+          error: 'Đăng nhập bằng mã OTP yêu cầu hệ thống đã bật dịch vụ gửi Email/SMS thật. Vui lòng đăng nhập bằng Mật khẩu hoặc Facebook/Google.',
+        }, 400);
+      }
+    }
+
+    auth.otps = auth.otps || {};
+    const key = makeOtpKey(purpose, channel, target);
+    const now = Date.now();
+    const prev = auth.otps[key];
+    if (prev && prev.resendAfter > now) {
+      const retryAfterSec = Math.max(1, Math.ceil((prev.resendAfter - now) / 1000));
+      return jsonRes({
+        ok: false,
+        retryAfterSec,
+        error: `Vui lòng đợi ${retryAfterSec} giây trước khi gửi lại mã xác thực.`,
+      }, 429);
+    }
+
+    const code = String(crypto.randomInt(100000, 1000000));
+    const dispatchRes = channel === 'gmail'
+      ? await dispatchEmailOtp(core, { email: target, code, purpose })
+      : await dispatchSmsOtp(core, { phone: target, code, purpose });
+
+    if (dispatchRes.configured && !dispatchRes.ok) {
+      return jsonRes({ ok: false, error: dispatchRes.error || 'Không gửi được mã xác thực.' }, 502);
+    }
+
+    if (!dispatchRes.configured && (purpose === 'login' || getEnv('STRICT_OTP_GATEWAY') === 'true')) {
+      return jsonRes({
+        ok: false,
+        error: channel === 'gmail'
+          ? 'Hệ thống chưa cấu hình cổng gửi Email OTP (RESEND_API_KEY / BREVO_API_KEY / OTP_EMAIL_WEBHOOK_URL).'
+          : 'Hệ thống chưa cấu hình cổng gửi SMS OTP (ESMS / TWILIO / OTP_SMS_WEBHOOK_URL).',
+      }, 400);
+    }
+
+    const delivery = dispatchRes.configured ? dispatchRes.delivery : 'on_screen_fallback';
+    auth.otps[key] = {
+      codeHash: hashOtpCode(key, code),
+      channel,
+      target,
+      purpose,
+      delivery,
+      provider: dispatchRes.provider || 'instant',
+      attempts: 0,
+      maxAttempts: 5,
+      sentAt: now,
+      resendAfter: now + 30 * 1000,
+      expiresAt: now + 5 * 60 * 1000,
+      verified: false,
+      verificationToken: '',
+      verifiedExpiresAt: 0,
+    };
     await saveAuth(stores, auth);
 
-    const fromAddr = getEnv('MAIL_FROM') || 'L\'Amour Atelier <onboarding@resend.dev>';
-    const mailRes = await fetch('https://api.resend.com/emails', {
-      method: 'POST',
-      headers: {
-        authorization: `Bearer ${resendKey}`,
-        'content-type': 'application/json',
-      },
-      body: JSON.stringify({
-        from: fromAddr,
-        to: [email],
-        subject: `Mã xác thực đăng ký L'Amour Atelier: ${code}`,
-        html: `<p>Xin chào,</p><p>Mã xác thực Gmail đăng ký tài khoản tại <strong>L'Amour Atelier</strong> của bạn là:</p><h2 style="letter-spacing:4px;color:#8f1d32;">${code}</h2><p>Mã có hiệu lực trong 10 phút.</p>`,
-      }),
-    });
-    if (!mailRes.ok) {
-      return jsonRes({ ok: false, error: 'Không gửi được email xác thực. Hãy kiểm tra lại địa chỉ Gmail của bạn.' }, 502);
+    const resp = {
+      ok: true,
+      sent: true,
+      channel,
+      target,
+      purpose,
+      delivery,
+      provider: dispatchRes.provider || 'instant',
+      expiresInSec: 300,
+      cooldownSec: 30,
+    };
+    if (delivery === 'on_screen_fallback' && purpose === 'register') {
+      resp.previewCode = code;
+      resp.notice = channel === 'gmail'
+        ? 'Chế độ xác thực tức thì (chưa gắn RESEND/BREVO API Key) — hãy nhập mã 6 số hiển thị bên dưới để xác nhận Gmail.'
+        : 'Chế độ xác thực tức thì (chưa gắn eSMS/Twilio API Key) — hãy nhập mã 6 số hiển thị bên dưới để xác nhận SĐT.';
     }
-    return jsonRes({ ok: true, sent: true });
+    return jsonRes(resp);
   }
 
-  // 6. Auth Register (Strict Gmail + Confirmation / Optional OTP + Strict Numeric Phone)
+  // 5b. OTP Verify (Step 1 verification -> issues short-lived verification token for registration/login)
+  if (action === 'auth_otp_verify' && method === 'POST') {
+    const body = await parseJson(req);
+    const channel = String(body.channel || 'gmail').trim().toLowerCase();
+    const purpose = String(body.purpose || 'register').trim().toLowerCase();
+    const code = String(body.code || body.otpCode || '').replace(/\D/g, '').slice(0, 6);
+    if (channel !== 'gmail' && channel !== 'phone') {
+      return jsonRes({ ok: false, error: 'Kênh xác thực không hợp lệ.' }, 400);
+    }
+    if (purpose !== 'register' && purpose !== 'login') {
+      return jsonRes({ ok: false, error: 'Mục đích xác thực OTP không hợp lệ.' }, 400);
+    }
+    const target = channel === 'gmail' ? normalizeEmail(body.target || body.email || '') : sanitizePhone(body.target || body.phone || '');
+    if (!target || code.length !== 6) {
+      return jsonRes({ ok: false, error: 'Vui lòng nhập đầy đủ mã xác thực gồm 6 chữ số.' }, 400);
+    }
+
+    const key = makeOtpKey(purpose, channel, target);
+    const rec = (auth.otps || {})[key];
+    const now = Date.now();
+    if (!rec || rec.expiresAt < now) {
+      if (rec) { delete auth.otps[key]; await saveAuth(stores, auth); }
+      return jsonRes({ ok: false, error: 'Mã xác thực đã hết hạn hoặc chưa được gửi. Vui lòng bấm Gửi mã mới.' }, 400);
+    }
+    if (Number(rec.attempts || 0) >= Number(rec.maxAttempts || 5)) {
+      delete auth.otps[key];
+      await saveAuth(stores, auth);
+      return jsonRes({ ok: false, error: 'Bạn đã nhập sai mã quá 5 lần. Vui lòng bấm Gửi mã xác thực mới.' }, 429);
+    }
+
+    const expectedHash = String(rec.codeHash || '');
+    const gotHash = hashOtpCode(key, code);
+    if (!timingSafeEqualStr(gotHash, expectedHash)) {
+      rec.attempts = Number(rec.attempts || 0) + 1;
+      const remain = Math.max(0, Number(rec.maxAttempts || 5) - rec.attempts);
+      if (remain <= 0) delete auth.otps[key];
+      await saveAuth(stores, auth);
+      return jsonRes({
+        ok: false,
+        remainingAttempts: remain,
+        error: remain > 0
+          ? `Mã xác thực 6 số không chính xác (còn ${remain} lần thử).`
+          : 'Bạn đã nhập sai mã quá 5 lần. Vui lòng gửi lại mã mới.',
+      }, 400);
+    }
+
+    const verificationToken = 'otpv_' + crypto.randomBytes(16).toString('hex');
+    rec.verified = true;
+    rec.verificationToken = verificationToken;
+    rec.verifiedExpiresAt = now + 10 * 60 * 1000;
+    await saveAuth(stores, auth);
+    return jsonRes({ ok: true, verified: true, verificationToken, channel, target, purpose });
+  }
+
+  // 6. Auth Register (MANDATORY OTP verification for BOTH Gmail and 10-digit VN Phone!)
   if (action === 'auth_register' && method === 'POST') {
     const body = await parseJson(req);
-    const provider = String(body.provider || 'gmail').trim();
+    const provider = String(body.provider || 'gmail').trim().toLowerCase();
     const name = String(body.name || '').trim().slice(0, 100);
     const email = normalizeEmail(body.email);
     const confirmEmail = normalizeEmail(body.confirmEmail);
     const rawPhone = String(body.phone || '').trim();
     const phone = sanitizePhone(rawPhone);
     const password = String(body.password || '');
-    const otpCode = String(body.otpCode || '').trim();
+    const otpCode = String(body.otpCode || '').replace(/\D/g, '').slice(0, 6);
+    const otpVerificationToken = String(body.otpVerificationToken || '').trim();
 
+    if (provider !== 'gmail' && provider !== 'phone') {
+      return jsonRes({ ok: false, error: 'Phương thức đăng ký chỉ hỗ trợ Gmail hoặc Số điện thoại.' }, 400);
+    }
     if (!name) return jsonRes({ ok: false, error: 'Vui lòng nhập họ và tên' }, 400);
 
     if (provider === 'gmail') {
@@ -899,16 +1410,11 @@ async function routeApiRequest(
       if (confirmEmail && confirmEmail !== email) {
         return jsonRes({ ok: false, error: 'Gmail xác nhận không khớp với Gmail bạn đã nhập' }, 400);
       }
-      if (getEnv('RESEND_API_KEY')) {
-        const rec = (auth.gmailOtps || {})[email];
-        if (!rec || rec.expiresAt < Date.now() || rec.code !== otpCode) {
-          return jsonRes({ ok: false, error: 'Mã xác thực 6 số gửi tới Gmail không đúng hoặc đã hết hạn' }, 400);
-        }
-        delete auth.gmailOtps[email];
+      if (rawPhone) {
+        const phoneCheck = validateVnPhone10(rawPhone);
+        if (!phoneCheck.ok) return jsonRes({ ok: false, error: phoneCheck.error }, 400);
       }
-    }
-
-    if (provider === 'phone') {
+    } else {
       const phoneCheck = validateVnPhone10(rawPhone);
       if (!phoneCheck.ok) {
         return jsonRes({ ok: false, error: phoneCheck.error }, 400);
@@ -916,15 +1422,45 @@ async function routeApiRequest(
       if (email && !isStrictGmail(email)) {
         return jsonRes({ ok: false, error: 'Gmail bổ sung phải đúng định dạng @gmail.com' }, 400);
       }
-    } else if (rawPhone) {
-      const phoneCheck = validateVnPhone10(rawPhone);
-      if (!phoneCheck.ok) {
-        return jsonRes({ ok: false, error: phoneCheck.error }, 400);
-      }
     }
 
     if (password.length < 6) {
       return jsonRes({ ok: false, error: 'Mật khẩu tối thiểu 6 ký tự' }, 400);
+    }
+
+    // Mandatory OTP verification before registering either Gmail or Phone
+    const otpTarget = provider === 'phone' ? phone : email;
+    const otpKey = makeOtpKey('register', provider, otpTarget);
+    const otpRec = (auth.otps || {})[otpKey];
+    const now = Date.now();
+
+    if (!otpRec) {
+      return jsonRes({
+        ok: false,
+        error: provider === 'phone'
+          ? 'Vui lòng bấm Gửi mã xác thực về Số điện thoại và nhập mã 6 số trước khi đăng ký.'
+          : 'Vui lòng bấm Gửi mã xác thực về Gmail và nhập mã 6 số trước khi đăng ký.',
+      }, 400);
+    }
+
+    let otpPassed = false;
+    if (otpVerificationToken && otpRec.verified && otpRec.verifiedExpiresAt >= now && timingSafeEqualStr(otpVerificationToken, otpRec.verificationToken)) {
+      otpPassed = true;
+    } else if (otpCode.length === 6 && otpRec.expiresAt >= now && Number(otpRec.attempts || 0) < Number(otpRec.maxAttempts || 5)) {
+      if (timingSafeEqualStr(hashOtpCode(otpKey, otpCode), otpRec.codeHash)) {
+        otpPassed = true;
+      } else {
+        otpRec.attempts = Number(otpRec.attempts || 0) + 1;
+        if (otpRec.attempts >= Number(otpRec.maxAttempts || 5)) delete auth.otps[otpKey];
+        await saveAuth(stores, auth);
+      }
+    }
+
+    if (!otpPassed) {
+      return jsonRes({
+        ok: false,
+        error: `Mã xác thực 6 số cho ${provider === 'phone' ? 'Số điện thoại' : 'Gmail'} không đúng hoặc đã hết hạn.`,
+      }, 400);
     }
 
     for (const u of auth.users || []) {
@@ -936,6 +1472,9 @@ async function routeApiRequest(
       }
     }
 
+    // Consume OTP record immediately after successful validation
+    delete auth.otps[otpKey];
+
     const user = {
       id: 'usr_' + crypto.randomBytes(5).toString('hex'),
       role: 'customer',
@@ -943,7 +1482,10 @@ async function routeApiRequest(
       name,
       email,
       phone,
-      emailVerified: Boolean(email && getEnv('RESEND_API_KEY')),
+      emailVerified: provider === 'gmail',
+      phoneVerified: provider === 'phone',
+      otpVerifiedDelivery: otpRec.delivery || 'instant',
+      hasPassword: true,
       passwordHash: hashPassword(password),
       createdAt: new Date().toISOString(),
     };
@@ -953,7 +1495,7 @@ async function routeApiRequest(
     return jsonRes({ ok: true, token, user: safeUser(user) });
   }
 
-  // 7. Auth Login (Gmail / Phone numeric / Facebook SDK verified token)
+  // 7. Auth Login (Password / Live OTP / Facebook SDK Token / Google GIS Token)
   if (action === 'auth_login' && method === 'POST') {
     const body = await parseJson(req);
     const provider = String(body.provider || 'password').trim();
@@ -961,37 +1503,163 @@ async function routeApiRequest(
     const identifier = String(body.identifier || '').trim();
     const password = String(body.password || '');
 
-    // Direct Facebook JS SDK access token login (verifies token directly against Facebook Graph API!)
+    // 7a. Direct Facebook JS SDK access token login
     if (provider === 'facebook_token') {
-      const fbToken = String(body.accessToken || '').trim();
-      if (!fbToken) return jsonRes({ ok: false, error: 'Thiếu mã đăng nhập từ Facebook' }, 400);
-      const fbRes = await fetch(`https://graph.facebook.com/me?fields=id,name,email&access_token=${encodeURIComponent(fbToken)}`);
-      if (!fbRes.ok) return jsonRes({ ok: false, error: 'Không xác thực được phiên đăng nhập Facebook' }, 401);
-      const profile = await fbRes.json();
-      if (!profile?.id) return jsonRes({ ok: false, error: 'Tài khoản Facebook không hợp lệ' }, 401);
-      const fbEmail = normalizeEmail(profile.email || '');
+      const fbAppId = getEnv('FACEBOOK_APP_ID') || String(core?.settings?.facebookAppId || '').trim();
+      const verified = await verifyFacebookAccessToken(body.accessToken, fbAppId);
+      if (!verified.ok) return jsonRes({ ok: false, error: verified.error }, verified.status || 401);
+      const profile = verified.profile;
+      const fbEmail = profile.email;
       if (fbEmail === ADMIN_EMAIL) {
         return jsonRes({ ok: false, error: 'Tài khoản Quản trị bắt buộc đăng nhập bằng Gmail và Mật khẩu' }, 403);
       }
-      let found = auth.users.find(u => u.facebookId === profile.id || (fbEmail && normalizeEmail(u.email) === fbEmail));
+      const nowIso = new Date().toISOString();
+      let found = auth.users.find(u => u.facebookId === profile.id)
+        || (fbEmail ? auth.users.find(u => normalizeEmail(u.email) === fbEmail) : null);
       if (!found) {
         found = {
           id: 'usr_' + crypto.randomBytes(5).toString('hex'),
           role: 'customer',
           provider: 'facebook',
           facebookId: profile.id,
-          name: String(profile.name || 'Khách Facebook').slice(0, 100),
+          facebookName: profile.name,
+          facebookEmail: fbEmail,
+          facebookLinkedAt: nowIso,
+          avatarUrl: profile.avatarUrl || '',
+          name: profile.name,
           email: fbEmail,
           phone: '',
           emailVerified: Boolean(fbEmail),
-          passwordHash: hashPassword(crypto.randomBytes(12).toString('hex')),
-          createdAt: new Date().toISOString(),
+          hasPassword: false,
+          passwordHash: hashPassword(crypto.randomBytes(16).toString('hex')),
+          createdAt: nowIso,
         };
         auth.users.push(found);
       } else {
+        if (found.role === 'admin') {
+          return jsonRes({ ok: false, error: 'Tài khoản Quản trị bắt buộc đăng nhập bằng Gmail và Mật khẩu' }, 403);
+        }
+        if (found.facebookId && found.facebookId !== profile.id) {
+          return jsonRes({ ok: false, error: 'Email này đã liên kết với một tài khoản Facebook khác. Vui lòng đăng nhập bằng đúng Facebook đã liên kết hoặc dùng Mật khẩu.' }, 409);
+        }
         found.facebookId = profile.id;
-        if (profile.name) found.name = String(profile.name).slice(0, 100);
+        found.facebookName = profile.name;
+        if (fbEmail) found.facebookEmail = fbEmail;
+        if (!found.facebookLinkedAt) found.facebookLinkedAt = nowIso;
+        if (profile.avatarUrl && !found.avatarUrl) found.avatarUrl = profile.avatarUrl;
+        if (profile.name && !found.name) found.name = profile.name;
       }
+      const token = createSession(auth, found.id);
+      await saveAuth(stores, auth);
+      return jsonRes({ ok: true, token, user: safeUser(found) });
+    }
+
+    // 7b. Direct Google Identity Services (GIS) ID Token / Access Token login
+    if (provider === 'google_token') {
+      const gClientId = getEnv('GOOGLE_CLIENT_ID') || String(core?.settings?.googleClientId || '').trim();
+      const verified = await verifyGoogleCredential({ idToken: body.idToken, accessToken: body.accessToken }, gClientId);
+      if (!verified.ok) return jsonRes({ ok: false, error: verified.error }, verified.status || 401);
+      const profile = verified.profile;
+      const gEmail = profile.email;
+      if (gEmail === ADMIN_EMAIL) {
+        return jsonRes({ ok: false, error: 'Tài khoản Quản trị bắt buộc đăng nhập bằng Gmail và Mật khẩu' }, 403);
+      }
+      const nowIso = new Date().toISOString();
+      let found = (profile.sub ? auth.users.find(u => u.googleId === profile.sub) : null)
+        || auth.users.find(u => normalizeEmail(u.email) === gEmail || normalizeEmail(u.googleEmail) === gEmail);
+      if (!found) {
+        found = {
+          id: 'usr_' + crypto.randomBytes(5).toString('hex'),
+          role: 'customer',
+          provider: 'google',
+          googleId: profile.sub,
+          googleEmail: gEmail,
+          googleName: profile.name,
+          googleLinkedAt: nowIso,
+          avatarUrl: profile.avatarUrl || '',
+          name: profile.name,
+          email: gEmail,
+          phone: '',
+          emailVerified: true,
+          hasPassword: false,
+          passwordHash: hashPassword(crypto.randomBytes(16).toString('hex')),
+          createdAt: nowIso,
+        };
+        auth.users.push(found);
+      } else {
+        if (found.role === 'admin') {
+          return jsonRes({ ok: false, error: 'Tài khoản Quản trị bắt buộc đăng nhập bằng Gmail và Mật khẩu' }, 403);
+        }
+        if (found.googleId && profile.sub && found.googleId !== profile.sub) {
+          return jsonRes({ ok: false, error: 'Email này đã liên kết với một tài khoản Google khác. Vui lòng đăng nhập bằng đúng Google đã liên kết hoặc dùng Mật khẩu.' }, 409);
+        }
+        found.googleId = profile.sub || found.googleId || '';
+        found.googleEmail = gEmail;
+        found.googleName = profile.name;
+        if (!found.googleLinkedAt) found.googleLinkedAt = nowIso;
+        found.emailVerified = true;
+        if (profile.avatarUrl && !found.avatarUrl) found.avatarUrl = profile.avatarUrl;
+        if (profile.name && !found.name) found.name = profile.name;
+      }
+      const token = createSession(auth, found.id);
+      await saveAuth(stores, auth);
+      return jsonRes({ ok: true, token, user: safeUser(found) });
+    }
+
+    // 7c. Passwordless OTP Login (strictly requires live Email/SMS delivery & non-admin user!)
+    if (provider === 'otp') {
+      const channel = String(body.channel || loginMethod || 'gmail').trim().toLowerCase();
+      if (channel !== 'gmail' && channel !== 'phone') {
+        return jsonRes({ ok: false, error: 'Kênh đăng nhập OTP phải là Gmail hoặc Số điện thoại.' }, 400);
+      }
+      let target = '';
+      if (channel === 'gmail') {
+        target = normalizeEmail(identifier);
+        if (!isStrictGmail(target)) {
+          return jsonRes({ ok: false, error: 'Vui lòng nhập đúng địa chỉ Gmail đã đăng ký (@gmail.com).' }, 400);
+        }
+      } else {
+        const phoneCheck = validateVnPhone10(identifier);
+        if (!phoneCheck.ok) {
+          return jsonRes({ ok: false, error: phoneCheck.error }, 400);
+        }
+        target = phoneCheck.digits;
+      }
+      const otpCode = String(body.otpCode || '').replace(/\D/g, '').slice(0, 6);
+      const otpVerificationToken = String(body.otpVerificationToken || '').trim();
+      const found = (auth.users || []).find(u =>
+        channel === 'gmail' ? normalizeEmail(u.email) === target : sanitizePhone(u.phone) === target
+      );
+      if (!found) {
+        return jsonRes({ ok: false, error: 'Không tìm thấy tài khoản phù hợp.' }, 401);
+      }
+      if (found.role === 'admin' || normalizeEmail(found.email) === ADMIN_EMAIL) {
+        return jsonRes({ ok: false, error: 'Tài khoản Quản trị bắt buộc đăng nhập bằng Gmail và Mật khẩu.' }, 403);
+      }
+      const otpKey = makeOtpKey('login', channel, target);
+      const otpRec = (auth.otps || {})[otpKey];
+      const now = Date.now();
+      if (!otpRec || otpRec.delivery === 'on_screen_fallback') {
+        return jsonRes({ ok: false, error: 'Mã OTP đăng nhập chưa được gửi hoặc không hợp lệ.' }, 400);
+      }
+      let otpOk = false;
+      if (otpVerificationToken && otpRec.verified && otpRec.verifiedExpiresAt >= now && timingSafeEqualStr(otpVerificationToken, otpRec.verificationToken)) {
+        otpOk = true;
+      } else if (otpCode.length === 6 && otpRec.expiresAt >= now && Number(otpRec.attempts || 0) < Number(otpRec.maxAttempts || 5)) {
+        if (timingSafeEqualStr(hashOtpCode(otpKey, otpCode), otpRec.codeHash)) {
+          otpOk = true;
+        } else {
+          otpRec.attempts = Number(otpRec.attempts || 0) + 1;
+          if (otpRec.attempts >= Number(otpRec.maxAttempts || 5)) delete auth.otps[otpKey];
+          await saveAuth(stores, auth);
+        }
+      }
+      if (!otpOk) {
+        return jsonRes({ ok: false, error: 'Mã xác thực OTP đăng nhập không đúng hoặc đã hết hạn.' }, 401);
+      }
+      delete auth.otps[otpKey];
+      if (channel === 'gmail') found.emailVerified = true;
+      if (channel === 'phone') found.phoneVerified = true;
       const token = createSession(auth, found.id);
       await saveAuth(stores, auth);
       return jsonRes({ ok: true, token, user: safeUser(found) });
@@ -1036,7 +1704,160 @@ async function routeApiRequest(
     return jsonRes({ ok: true, token, user: safeUser(found) });
   }
 
-  // 8. Real OAuth 2.0 Direct Redirect — Facebook
+  // 7d. Authenticated OAuth Link Init (POST -> never puts X-Auth-Token in URL!)
+  if (action === 'oauth_link_init' && method === 'POST') {
+    const user = getAuthUser(req, url, auth);
+    if (!user) return jsonRes({ ok: false, error: 'Vui lòng đăng nhập để liên kết tài khoản.' }, 401);
+    if (user.role === 'admin' || normalizeEmail(user.email) === ADMIN_EMAIL) {
+      return jsonRes({ ok: false, error: 'Tài khoản Quản trị bắt buộc đăng nhập bằng Gmail và Mật khẩu, không hỗ trợ liên kết mạng xã hội.' }, 403);
+    }
+    const body = await parseJson(req);
+    const provider = String(body.provider || '').trim().toLowerCase();
+    const returnTo = String(body.returnTo || req.headers.get('referer') || '').trim();
+    if (provider !== 'facebook' && provider !== 'google') {
+      return jsonRes({ ok: false, error: 'Chỉ hỗ trợ liên kết Facebook hoặc Google.' }, 400);
+    }
+
+    if (provider === 'facebook') {
+      const fbAppId = getEnv('FACEBOOK_APP_ID') || String(core?.settings?.facebookAppId || '').trim();
+      const fbSecret = getEnv('FACEBOOK_APP_SECRET');
+      if (!fbAppId || !fbSecret) {
+        return jsonRes({ ok: false, configured: false, error: 'Facebook OAuth chưa cấu hình FACEBOOK_APP_ID và FACEBOOK_APP_SECRET trên máy chủ.' }, 400);
+      }
+      const state = crypto.randomBytes(16).toString('hex');
+      auth.oauthStates[state] = { provider: 'facebook', mode: 'link', linkUserId: user.id, at: Date.now(), returnTo };
+      await saveAuth(stores, auth);
+      const callback = `${origin}/api?action=oauth_facebook_callback`;
+      const fbUrl = new URL('https://www.facebook.com/v21.0/dialog/oauth');
+      fbUrl.searchParams.set('client_id', fbAppId);
+      fbUrl.searchParams.set('redirect_uri', callback);
+      fbUrl.searchParams.set('state', state);
+      fbUrl.searchParams.set('scope', 'public_profile,email');
+      fbUrl.searchParams.set('response_type', 'code');
+      return jsonRes({ ok: true, provider: 'facebook', redirectUrl: fbUrl.toString() });
+    }
+
+    const gClientId = getEnv('GOOGLE_CLIENT_ID') || String(core?.settings?.googleClientId || '').trim();
+    const gSecret = getEnv('GOOGLE_CLIENT_SECRET');
+    if (!gClientId || !gSecret) {
+      return jsonRes({ ok: false, configured: false, error: 'Google OAuth chưa cấu hình GOOGLE_CLIENT_ID và GOOGLE_CLIENT_SECRET trên máy chủ.' }, 400);
+    }
+    const state = crypto.randomBytes(16).toString('hex');
+    auth.oauthStates[state] = { provider: 'google', mode: 'link', linkUserId: user.id, at: Date.now(), returnTo };
+    await saveAuth(stores, auth);
+    const callback = `${origin}/api?action=oauth_google_callback`;
+    const gUrl = new URL('https://accounts.google.com/o/oauth2/v2/auth');
+    gUrl.searchParams.set('client_id', gClientId);
+    gUrl.searchParams.set('redirect_uri', callback);
+    gUrl.searchParams.set('response_type', 'code');
+    gUrl.searchParams.set('scope', 'openid email profile');
+    gUrl.searchParams.set('state', state);
+    gUrl.searchParams.set('prompt', 'select_account');
+    return jsonRes({ ok: true, provider: 'google', redirectUrl: gUrl.toString() });
+  }
+
+  // 7e. Authenticated Client-Side Social Account Linking (Facebook SDK / Google GIS)
+  if (action === 'auth_link_social' && method === 'POST') {
+    const user = getAuthUser(req, url, auth);
+    if (!user) return jsonRes({ ok: false, error: 'Vui lòng đăng nhập để liên kết tài khoản.' }, 401);
+    if (user.role === 'admin' || normalizeEmail(user.email) === ADMIN_EMAIL) {
+      return jsonRes({ ok: false, error: 'Tài khoản Quản trị bắt buộc đăng nhập bằng Gmail và Mật khẩu, không hỗ trợ liên kết mạng xã hội.' }, 403);
+    }
+    const body = await parseJson(req);
+    const provider = String(body.provider || '').trim().toLowerCase();
+    const nowIso = new Date().toISOString();
+
+    if (provider === 'facebook') {
+      const fbAppId = getEnv('FACEBOOK_APP_ID') || String(core?.settings?.facebookAppId || '').trim();
+      const verified = await verifyFacebookAccessToken(body.accessToken, fbAppId);
+      if (!verified.ok) return jsonRes({ ok: false, error: verified.error }, verified.status || 401);
+      const profile = verified.profile;
+      if (profile.email === ADMIN_EMAIL) {
+        return jsonRes({ ok: false, error: 'Không thể liên kết tài khoản mạng xã hội dùng email Quản trị viên.' }, 403);
+      }
+      const conflict = (auth.users || []).find(u => u.id !== user.id && u.facebookId === profile.id);
+      if (conflict) {
+        return jsonRes({ ok: false, error: 'Tài khoản Facebook này đã được liên kết với một tài khoản khác.' }, 409);
+      }
+      user.facebookId = profile.id;
+      user.facebookName = profile.name;
+      if (profile.email) user.facebookEmail = profile.email;
+      user.facebookLinkedAt = nowIso;
+      if (profile.avatarUrl && !user.avatarUrl) user.avatarUrl = profile.avatarUrl;
+      await saveAuth(stores, auth);
+      return jsonRes({ ok: true, linked: 'facebook', user: safeUser(user) });
+    }
+
+    if (provider === 'google') {
+      const gClientId = getEnv('GOOGLE_CLIENT_ID') || String(core?.settings?.googleClientId || '').trim();
+      const verified = await verifyGoogleCredential({ idToken: body.idToken, accessToken: body.accessToken }, gClientId);
+      if (!verified.ok) return jsonRes({ ok: false, error: verified.error }, verified.status || 401);
+      const profile = verified.profile;
+      const gEmail = profile.email;
+      if (gEmail === ADMIN_EMAIL) {
+        return jsonRes({ ok: false, error: 'Không thể liên kết tài khoản Google dùng email Quản trị viên.' }, 403);
+      }
+      const conflict = (auth.users || []).find(u =>
+        u.id !== user.id && (
+          (profile.sub && u.googleId === profile.sub)
+          || (gEmail && (normalizeEmail(u.email) === gEmail || normalizeEmail(u.googleEmail) === gEmail))
+        )
+      );
+      if (conflict) {
+        return jsonRes({ ok: false, error: 'Tài khoản Google này đã được liên kết với một tài khoản khác.' }, 409);
+      }
+      user.googleId = profile.sub;
+      user.googleEmail = gEmail;
+      user.googleName = profile.name;
+      user.googleLinkedAt = nowIso;
+      if (!user.email && gEmail && gEmail !== ADMIN_EMAIL) {
+        user.email = gEmail;
+        user.emailVerified = true;
+      }
+      if (profile.avatarUrl && !user.avatarUrl) user.avatarUrl = profile.avatarUrl;
+      await saveAuth(stores, auth);
+      return jsonRes({ ok: true, linked: 'google', user: safeUser(user) });
+    }
+
+    return jsonRes({ ok: false, error: 'Nhà cung cấp liên kết không hợp lệ (chỉ hỗ trợ facebook hoặc google).' }, 400);
+  }
+
+  // 7f. Authenticated Social Account Unlinking (with anti-lockout safety check)
+  if (action === 'auth_unlink_social' && method === 'POST') {
+    const user = getAuthUser(req, url, auth);
+    if (!user) return jsonRes({ ok: false, error: 'Vui lòng đăng nhập.' }, 401);
+    const body = await parseJson(req);
+    const provider = String(body.provider || '').trim().toLowerCase();
+    if (provider !== 'facebook' && provider !== 'google') {
+      return jsonRes({ ok: false, error: 'Chỉ hỗ trợ hủy liên kết Facebook hoặc Google.' }, 400);
+    }
+    const hasPasswordLogin = (
+      user.hasPassword === true
+      || (user.hasPassword === undefined && user.provider !== 'facebook' && user.provider !== 'google')
+    ) && Boolean(user.email || user.phone);
+    const hasOtherSocial = provider === 'facebook' ? Boolean(user.googleId) : Boolean(user.facebookId);
+    if (!hasPasswordLogin && !hasOtherSocial) {
+      return jsonRes({
+        ok: false,
+        error: 'Không thể hủy liên kết vì đây là phương thức đăng nhập duy nhất của bạn. Hãy liên kết thêm tài khoản khác trước.',
+      }, 400);
+    }
+    if (provider === 'facebook') {
+      delete user.facebookId;
+      delete user.facebookName;
+      delete user.facebookEmail;
+      delete user.facebookLinkedAt;
+    } else {
+      delete user.googleId;
+      delete user.googleEmail;
+      delete user.googleName;
+      delete user.googleLinkedAt;
+    }
+    await saveAuth(stores, auth);
+    return jsonRes({ ok: true, unlinked: provider, user: safeUser(user) });
+  }
+
+  // 8. Real OAuth 2.0 Direct Redirect — Facebook (supports Login & Account Linking!)
   if (action === 'oauth_facebook_start' && method === 'GET') {
     const returnTo = url.searchParams.get('returnTo') || req.headers.get('referer') || '';
     const fbAppId = getEnv('FACEBOOK_APP_ID') || String(core?.settings?.facebookAppId || '').trim();
@@ -1047,7 +1868,7 @@ async function routeApiRequest(
       }));
     }
     const state = crypto.randomBytes(16).toString('hex');
-    auth.oauthStates[state] = { provider: 'facebook', at: Date.now(), returnTo };
+    auth.oauthStates[state] = { provider: 'facebook', mode: 'login', at: Date.now(), returnTo };
     await saveAuth(stores, auth);
     const callback = `${origin}/api?action=oauth_facebook_callback`;
     const fbUrl = new URL('https://www.facebook.com/v21.0/dialog/oauth');
@@ -1065,15 +1886,20 @@ async function routeApiRequest(
     const errParam = url.searchParams.get('error_message') || url.searchParams.get('error') || '';
     const savedState = (auth.oauthStates || {})[state];
     const returnTo = savedState?.returnTo || '';
+    const isLinkFlow = savedState?.mode === 'link' && Boolean(savedState?.linkUserId);
+    const baseErrParams = isLinkFlow ? { role: 'account' } : {};
     if (errParam) {
       if (savedState) {
         delete auth.oauthStates[state];
         await saveAuth(stores, auth);
       }
-      return redirectRes(resolveFrontendRedirectUrl(returnTo, origin, { oauth_error: 'Bạn đã hủy đăng nhập Facebook' }));
+      return redirectRes(resolveFrontendRedirectUrl(returnTo, origin, {
+        ...baseErrParams,
+        oauth_error: isLinkFlow ? 'Bạn đã hủy liên kết tài khoản Facebook' : 'Bạn đã hủy đăng nhập Facebook',
+      }));
     }
     if (!code || !savedState || savedState.provider !== 'facebook') {
-      return redirectRes(resolveFrontendRedirectUrl(returnTo, origin, { oauth_error: 'Phiên đăng nhập Facebook hết hạn, vui lòng thử lại' }));
+      return redirectRes(resolveFrontendRedirectUrl(returnTo, origin, { ...baseErrParams, oauth_error: 'Phiên đăng nhập Facebook hết hạn, vui lòng thử lại' }));
     }
     delete auth.oauthStates[state];
 
@@ -1087,44 +1913,96 @@ async function routeApiRequest(
     tokUrl.searchParams.set('redirect_uri', callback);
     tokUrl.searchParams.set('code', code);
 
-    const tokRes = await fetch(tokUrl.toString());
-    const tokData = await tokRes.json().catch(() => ({}));
-    if (!tokRes.ok || !tokData.access_token) {
+    let tokRes, tokData, profRes, profile;
+    try {
+      tokRes = await externalFetchSafe(tokUrl.toString());
+      tokData = await tokRes.json().catch(() => ({}));
+      if (!tokRes.ok || !tokData.access_token) {
+        await saveAuth(stores, auth);
+        return redirectRes(resolveFrontendRedirectUrl(returnTo, origin, { ...baseErrParams, oauth_error: 'Không lấy được mã xác thực từ Facebook' }));
+      }
+      profRes = await externalFetchSafe(`https://graph.facebook.com/me?fields=id,name,email,picture.type(large)&access_token=${encodeURIComponent(tokData.access_token)}`);
+      profile = await profRes.json().catch(() => ({}));
+      if (!profRes.ok || !profile.id) {
+        await saveAuth(stores, auth);
+        return redirectRes(resolveFrontendRedirectUrl(returnTo, origin, { ...baseErrParams, oauth_error: 'Không đọc được hồ sơ Facebook' }));
+      }
+    } catch (_) {
       await saveAuth(stores, auth);
-      return redirectRes(resolveFrontendRedirectUrl(returnTo, origin, { oauth_error: 'Không lấy được mã xác thực từ Facebook' }));
+      return redirectRes(resolveFrontendRedirectUrl(returnTo, origin, { ...baseErrParams, oauth_error: 'Lỗi kết nối tới Facebook, vui lòng thử lại' }));
     }
 
-    const profRes = await fetch(`https://graph.facebook.com/me?fields=id,name,email&access_token=${encodeURIComponent(tokData.access_token)}`);
-    const profile = await profRes.json().catch(() => ({}));
-    if (!profRes.ok || !profile.id) {
-      await saveAuth(stores, auth);
-      return redirectRes(resolveFrontendRedirectUrl(returnTo, origin, { oauth_error: 'Không đọc được hồ sơ Facebook' }));
-    }
-
+    const fbId = String(profile.id);
+    const fbName = String(profile.name || 'Khách Facebook').slice(0, 100);
     const fbEmail = normalizeEmail(profile.email || '');
+    const fbAvatar = String(profile.picture?.data?.url || '').slice(0, 500);
+    const nowIso = new Date().toISOString();
+
+    if (isLinkFlow) {
+      const targetUser = (auth.users || []).find(u => u.id === savedState.linkUserId);
+      if (!targetUser) {
+        await saveAuth(stores, auth);
+        return redirectRes(resolveFrontendRedirectUrl(returnTo, origin, { role: 'account', oauth_error: 'Không tìm thấy tài khoản để liên kết Facebook' }));
+      }
+      if (targetUser.role === 'admin' || fbEmail === ADMIN_EMAIL) {
+        await saveAuth(stores, auth);
+        return redirectRes(resolveFrontendRedirectUrl(returnTo, origin, { role: 'account', oauth_error: 'Không hỗ trợ liên kết mạng xã hội cho tài khoản Quản trị viên' }));
+      }
+      const conflict = (auth.users || []).find(u => u.id !== targetUser.id && u.facebookId === fbId);
+      if (conflict) {
+        await saveAuth(stores, auth);
+        return redirectRes(resolveFrontendRedirectUrl(returnTo, origin, { role: 'account', oauth_error: 'Tài khoản Facebook này đã được liên kết với một tài khoản khác' }));
+      }
+      targetUser.facebookId = fbId;
+      targetUser.facebookName = fbName;
+      if (fbEmail) targetUser.facebookEmail = fbEmail;
+      targetUser.facebookLinkedAt = nowIso;
+      if (fbAvatar && !targetUser.avatarUrl) targetUser.avatarUrl = fbAvatar;
+      await saveAuth(stores, auth);
+      return redirectRes(resolveFrontendRedirectUrl(returnTo, origin, { role: 'account', oauth_linked: 'facebook' }));
+    }
+
     if (fbEmail === ADMIN_EMAIL) {
       await saveAuth(stores, auth);
       return redirectRes(resolveFrontendRedirectUrl(returnTo, origin, { oauth_error: 'Tài khoản Quản trị cần đăng nhập bằng Gmail và Mật khẩu' }));
     }
 
-    let found = auth.users.find(u => u.facebookId === profile.id || (fbEmail && normalizeEmail(u.email) === fbEmail));
+    let found = auth.users.find(u => u.facebookId === fbId)
+      || (fbEmail ? auth.users.find(u => normalizeEmail(u.email) === fbEmail) : null);
     if (!found) {
       found = {
         id: 'usr_' + crypto.randomBytes(5).toString('hex'),
         role: 'customer',
         provider: 'facebook',
-        facebookId: profile.id,
-        name: String(profile.name || 'Khách Facebook').slice(0, 100),
+        facebookId: fbId,
+        facebookName: fbName,
+        facebookEmail: fbEmail,
+        facebookLinkedAt: nowIso,
+        avatarUrl: fbAvatar,
+        name: fbName,
         email: fbEmail,
         phone: '',
         emailVerified: Boolean(fbEmail),
-        passwordHash: hashPassword(crypto.randomBytes(12).toString('hex')),
-        createdAt: new Date().toISOString(),
+        hasPassword: false,
+        passwordHash: hashPassword(crypto.randomBytes(16).toString('hex')),
+        createdAt: nowIso,
       };
       auth.users.push(found);
     } else {
-      found.facebookId = profile.id;
-      if (profile.name) found.name = String(profile.name).slice(0, 100);
+      if (found.role === 'admin') {
+        await saveAuth(stores, auth);
+        return redirectRes(resolveFrontendRedirectUrl(returnTo, origin, { oauth_error: 'Tài khoản Quản trị cần đăng nhập bằng Gmail và Mật khẩu' }));
+      }
+      if (found.facebookId && found.facebookId !== fbId) {
+        await saveAuth(stores, auth);
+        return redirectRes(resolveFrontendRedirectUrl(returnTo, origin, { oauth_error: 'Email này đã liên kết với một tài khoản Facebook khác' }));
+      }
+      found.facebookId = fbId;
+      found.facebookName = fbName;
+      if (fbEmail) found.facebookEmail = fbEmail;
+      if (!found.facebookLinkedAt) found.facebookLinkedAt = nowIso;
+      if (fbAvatar && !found.avatarUrl) found.avatarUrl = fbAvatar;
+      if (fbName && !found.name) found.name = fbName;
     }
 
     const token = createSession(auth, found.id);
@@ -1132,7 +2010,7 @@ async function routeApiRequest(
     return redirectRes(resolveFrontendRedirectUrl(returnTo, origin, { oauth_token: token, oauth_provider: 'facebook' }));
   }
 
-  // 9. Real OAuth 2.0 Direct Redirect — Google (verifies authentic Gmail directly from Google!)
+  // 9. Real OAuth 2.0 Direct Redirect — Google (supports Login & Account Linking!)
   if (action === 'oauth_google_start' && method === 'GET') {
     const returnTo = url.searchParams.get('returnTo') || req.headers.get('referer') || '';
     const gClientId = getEnv('GOOGLE_CLIENT_ID') || String(core?.settings?.googleClientId || '').trim();
@@ -1143,7 +2021,7 @@ async function routeApiRequest(
       }));
     }
     const state = crypto.randomBytes(16).toString('hex');
-    auth.oauthStates[state] = { provider: 'google', at: Date.now(), returnTo };
+    auth.oauthStates[state] = { provider: 'google', mode: 'login', at: Date.now(), returnTo };
     await saveAuth(stores, auth);
     const callback = `${origin}/api?action=oauth_google_callback`;
     const gUrl = new URL('https://accounts.google.com/o/oauth2/v2/auth');
@@ -1162,15 +2040,20 @@ async function routeApiRequest(
     const errParam = url.searchParams.get('error_description') || url.searchParams.get('error') || '';
     const savedState = (auth.oauthStates || {})[state];
     const returnTo = savedState?.returnTo || '';
+    const isLinkFlow = savedState?.mode === 'link' && Boolean(savedState?.linkUserId);
+    const baseErrParams = isLinkFlow ? { role: 'account' } : {};
     if (errParam) {
       if (savedState) {
         delete auth.oauthStates[state];
         await saveAuth(stores, auth);
       }
-      return redirectRes(resolveFrontendRedirectUrl(returnTo, origin, { oauth_error: 'Bạn đã hủy đăng nhập Google' }));
+      return redirectRes(resolveFrontendRedirectUrl(returnTo, origin, {
+        ...baseErrParams,
+        oauth_error: isLinkFlow ? 'Bạn đã hủy liên kết tài khoản Google' : 'Bạn đã hủy đăng nhập Google',
+      }));
     }
     if (!code || !savedState || savedState.provider !== 'google') {
-      return redirectRes(resolveFrontendRedirectUrl(returnTo, origin, { oauth_error: 'Phiên đăng nhập Google hết hạn, vui lòng thử lại' }));
+      return redirectRes(resolveFrontendRedirectUrl(returnTo, origin, { ...baseErrParams, oauth_error: 'Phiên đăng nhập Google hết hạn, vui lòng thử lại' }));
     }
     delete auth.oauthStates[state];
 
@@ -1178,55 +2061,120 @@ async function routeApiRequest(
     const gSecret = getEnv('GOOGLE_CLIENT_SECRET');
     const callback = `${origin}/api?action=oauth_google_callback`;
 
-    const tokRes = await fetch('https://oauth2.googleapis.com/token', {
-      method: 'POST',
-      headers: { 'content-type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({
-        code,
-        client_id: gClientId,
-        client_secret: gSecret,
-        redirect_uri: callback,
-        grant_type: 'authorization_code',
-      }),
-    });
-    const tokData = await tokRes.json().catch(() => ({}));
-    if (!tokRes.ok || !tokData.access_token) {
+    let tokRes, tokData, profRes, profile;
+    try {
+      tokRes = await externalFetchSafe('https://oauth2.googleapis.com/token', {
+        method: 'POST',
+        headers: { 'content-type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({
+          code,
+          client_id: gClientId,
+          client_secret: gSecret,
+          redirect_uri: callback,
+          grant_type: 'authorization_code',
+        }),
+      });
+      tokData = await tokRes.json().catch(() => ({}));
+      if (!tokRes.ok || !tokData.access_token) {
+        await saveAuth(stores, auth);
+        return redirectRes(resolveFrontendRedirectUrl(returnTo, origin, { ...baseErrParams, oauth_error: 'Không xác thực được tài khoản Google' }));
+      }
+      profRes = await externalFetchSafe('https://www.googleapis.com/oauth2/v3/userinfo', {
+        headers: { authorization: `Bearer ${tokData.access_token}` },
+      });
+      profile = await profRes.json().catch(() => ({}));
+    } catch (_) {
       await saveAuth(stores, auth);
-      return redirectRes(resolveFrontendRedirectUrl(returnTo, origin, { oauth_error: 'Không xác thực được tài khoản Google' }));
+      return redirectRes(resolveFrontendRedirectUrl(returnTo, origin, { ...baseErrParams, oauth_error: 'Lỗi kết nối tới Google, vui lòng thử lại' }));
     }
 
-    const profRes = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
-      headers: { authorization: `Bearer ${tokData.access_token}` },
-    });
-    const profile = await profRes.json().catch(() => ({}));
     const gEmail = normalizeEmail(profile.email || '');
-    if (!profRes.ok || !gEmail || !profile.email_verified) {
+    const gSub = String(profile.sub || '').trim();
+    const gName = String(profile.name || gEmail.split('@')[0] || 'Khách Google').slice(0, 100);
+    const gAvatar = String(profile.picture || '').slice(0, 500);
+    if (!profRes.ok || !gSub || !gEmail || !isStrictVerifiedFlag(profile.email_verified)) {
       await saveAuth(stores, auth);
-      return redirectRes(resolveFrontendRedirectUrl(returnTo, origin, { oauth_error: 'Google chưa xác minh địa chỉ Gmail này' }));
+      return redirectRes(resolveFrontendRedirectUrl(returnTo, origin, { ...baseErrParams, oauth_error: 'Google chưa xác minh địa chỉ Gmail hoặc hồ sơ không hợp lệ' }));
     }
+
+    const nowIso = new Date().toISOString();
+
+    if (isLinkFlow) {
+      const targetUser = (auth.users || []).find(u => u.id === savedState.linkUserId);
+      if (!targetUser) {
+        await saveAuth(stores, auth);
+        return redirectRes(resolveFrontendRedirectUrl(returnTo, origin, { role: 'account', oauth_error: 'Không tìm thấy tài khoản để liên kết Google' }));
+      }
+      if (targetUser.role === 'admin' || gEmail === ADMIN_EMAIL) {
+        await saveAuth(stores, auth);
+        return redirectRes(resolveFrontendRedirectUrl(returnTo, origin, { role: 'account', oauth_error: 'Không hỗ trợ liên kết mạng xã hội cho tài khoản Quản trị viên' }));
+      }
+      const conflict = (auth.users || []).find(u =>
+        u.id !== targetUser.id && (
+          (gSub && u.googleId === gSub)
+          || normalizeEmail(u.email) === gEmail
+          || normalizeEmail(u.googleEmail) === gEmail
+        )
+      );
+      if (conflict) {
+        await saveAuth(stores, auth);
+        return redirectRes(resolveFrontendRedirectUrl(returnTo, origin, { role: 'account', oauth_error: 'Tài khoản Google này đã được liên kết với một tài khoản khác' }));
+      }
+      targetUser.googleId = gSub;
+      targetUser.googleEmail = gEmail;
+      targetUser.googleName = gName;
+      targetUser.googleLinkedAt = nowIso;
+      if (!targetUser.email && gEmail !== ADMIN_EMAIL) {
+        targetUser.email = gEmail;
+        targetUser.emailVerified = true;
+      }
+      if (gAvatar && !targetUser.avatarUrl) targetUser.avatarUrl = gAvatar;
+      await saveAuth(stores, auth);
+      return redirectRes(resolveFrontendRedirectUrl(returnTo, origin, { role: 'account', oauth_linked: 'google' }));
+    }
+
     if (gEmail === ADMIN_EMAIL) {
       await saveAuth(stores, auth);
       return redirectRes(resolveFrontendRedirectUrl(returnTo, origin, { oauth_error: 'Tài khoản Quản trị cần đăng nhập bằng Gmail và Mật khẩu' }));
     }
 
-    let found = auth.users.find(u => normalizeEmail(u.email) === gEmail);
+    let found = (gSub ? auth.users.find(u => u.googleId === gSub) : null)
+      || auth.users.find(u => normalizeEmail(u.email) === gEmail || normalizeEmail(u.googleEmail) === gEmail);
     if (!found) {
       found = {
         id: 'usr_' + crypto.randomBytes(5).toString('hex'),
         role: 'customer',
-        provider: 'gmail',
-        googleId: profile.sub || '',
-        name: String(profile.name || gEmail.split('@')[0]).slice(0, 100),
+        provider: 'google',
+        googleId: gSub,
+        googleEmail: gEmail,
+        googleName: gName,
+        googleLinkedAt: nowIso,
+        avatarUrl: gAvatar,
+        name: gName,
         email: gEmail,
         phone: '',
         emailVerified: true,
-        passwordHash: hashPassword(crypto.randomBytes(12).toString('hex')),
-        createdAt: new Date().toISOString(),
+        hasPassword: false,
+        passwordHash: hashPassword(crypto.randomBytes(16).toString('hex')),
+        createdAt: nowIso,
       };
       auth.users.push(found);
     } else {
+      if (found.role === 'admin') {
+        await saveAuth(stores, auth);
+        return redirectRes(resolveFrontendRedirectUrl(returnTo, origin, { oauth_error: 'Tài khoản Quản trị cần đăng nhập bằng Gmail và Mật khẩu' }));
+      }
+      if (found.googleId && gSub && found.googleId !== gSub) {
+        await saveAuth(stores, auth);
+        return redirectRes(resolveFrontendRedirectUrl(returnTo, origin, { oauth_error: 'Email này đã liên kết với một tài khoản Google khác' }));
+      }
+      found.googleId = gSub || found.googleId || '';
+      found.googleEmail = gEmail;
+      found.googleName = gName;
+      if (!found.googleLinkedAt) found.googleLinkedAt = nowIso;
       found.emailVerified = true;
-      if (profile.name && !found.name) found.name = String(profile.name).slice(0, 100);
+      if (gAvatar && !found.avatarUrl) found.avatarUrl = gAvatar;
+      if (gName && !found.name) found.name = gName;
     }
 
     const token = createSession(auth, found.id);
@@ -1296,7 +2244,7 @@ async function routeApiRequest(
     const body = await parseJson(req);
     const nextCore = {
       ...core,
-      version: Math.max(Number(body.version || 0), 13),
+      version: Math.max(Number(body.version || 0), 15),
       settings: body.settings || core.settings,
       templates: Array.isArray(body.templates) ? body.templates : core.templates,
       invitations: Array.isArray(body.invitations) ? body.invitations : core.invitations,
@@ -1650,11 +2598,12 @@ async function routeApiRequest(
   if (action === 'get_invitation' && method === 'GET') {
     const id = sanitizeId(url.searchParams.get('id') || '');
     const mode = url.searchParams.get('mode') || 'guest';
+    const isBlank = url.searchParams.get('blank') === '1';
     const inv = (core.invitations || []).find(i => i.id === id);
     if (!inv) return jsonRes({ ok: false, error: 'Không tìm thấy thiệp cưới này' }, 404);
 
+    const user = getAuthUser(req, url, auth);
     if (mode === 'client') {
-      const user = getAuthUser(req, url, auth);
       const token = req.headers.get('x-client-token') || url.searchParams.get('token') || '';
       const uEmail = normalizeEmail(user?.email);
       const uPhone = sanitizePhone(user?.phone);
@@ -1667,12 +2616,31 @@ async function routeApiRequest(
       return jsonRes({ ok: true, invitation: inv, settings: core.settings || {}, templates: core.templates || [] });
     }
 
+    const status = inv.order?.status || 'trial';
+    const isPubliclyActive = status === 'paid' || status === 'deposit' || Boolean(inv.trial?.enabled) || user?.role === 'admin';
+    if (!isPubliclyActive && !isBlank) {
+      return jsonRes({
+        ok: false,
+        paymentRequired: true,
+        error: 'Thiệp cưới này đang ở bản nháp chưa thanh toán. Vui lòng hoàn tất thanh toán để kích hoạt đường link gửi khách mời.',
+      }, 403);
+    }
+
     const guestSafe = JSON.parse(JSON.stringify(inv));
     delete guestSafe.clientToken;
     delete guestSafe.guests;
     delete guestSafe.rsvps;
-    guestSafe.order = { status: inv.order?.status || 'trial', showWatermark: Boolean(inv.order?.showWatermark) };
+    guestSafe.order = { status, showWatermark: Boolean(inv.order?.showWatermark) };
     guestSafe.wishes = (guestSafe.wishes || []).filter(w => !w.hidden);
+    if (isBlank && !isPubliclyActive) {
+      guestSafe.content = {
+        ...(guestSafe.content || {}),
+        heroPhoto: '',
+        gallery: [],
+        gift: { title: 'Hộp Mừng Cưới', subtitle: '', groomBank: {}, brideBank: {} },
+      };
+      guestSafe.wishes = [];
+    }
     return jsonRes({ ok: true, invitation: guestSafe, settings: core.settings || {} });
   }
 
@@ -1707,12 +2675,18 @@ async function routeApiRequest(
       }
       inv.content = nextContent;
     }
-    if (Array.isArray(body.sections)) inv.sections = body.sections;
-    if (body.guestForm) inv.guestForm = body.guestForm;
+    if (Array.isArray(body.sections) && (!trialActive || limits.allowSectionToggle === true)) inv.sections = body.sections;
+    if (body.guestForm && typeof body.guestForm === 'object') {
+      const nextGf = JSON.parse(JSON.stringify(body.guestForm));
+      if (trialActive && limits.allowCustomRsvpFields !== true && limits.allowCustomQuestions !== true) {
+        nextGf.customFields = inv.guestForm?.customFields || [];
+      }
+      inv.guestForm = nextGf;
+    }
     if (Array.isArray(body.guests) && (!trialActive || limits.allowGuestLinks !== false)) inv.guests = body.guests;
     if (Array.isArray(body.wishes)) inv.wishes = body.wishes;
     if (body.music && (!trialActive || limits.allowMusicChange)) inv.music = body.music;
-    if (body.templateId) {
+    if (body.templateId && body.templateId !== inv.templateId) {
       const tplObj = (core.templates || []).find(t => t.id === body.templateId);
       if (tplObj) {
         inv.templateId = tplObj.id;
@@ -1840,7 +2814,7 @@ async function routeApiRequest(
     }
 
     const nowMs = Date.now();
-    const code = 'LAMOUR' + crypto.randomBytes(3).toString('hex').toUpperCase();
+    const code = 'DAILO' + crypto.randomBytes(3).toString('hex').toUpperCase();
     const payment = {
       code,
       invitationId: inv.id,

@@ -1,5 +1,5 @@
 /**
- * L'Amour Atelier — Standalone Render Cloud Backend Server (v14)
+ * DaiLo Wedding — Standalone Render Cloud Backend Server (v15)
  * Chạy trực tiếp trên Render Web Service (Node.js 20/22+), VPS, Docker, Railway hoặc Localhost.
  * - Hỗ trợ PostgreSQL (DATABASE_URL) và Persistent Disk (DATA_DIR)
  * - Nhận diện chuẩn reverse proxy HTTPS của Render (X-Forwarded-Proto / RENDER_EXTERNAL_URL)
@@ -194,7 +194,7 @@ export async function createRenderServer({
           200,
           {
             ok: true,
-            service: 'lamour-atelier-backend',
+            service: 'dailo-wedding-backend',
             engine: runtime.engine,
             persistent: runtime.persistent,
             storageWarning: runtime.storageWarning || '',
@@ -213,7 +213,7 @@ export async function createRenderServer({
           200,
           {
             ok: true,
-            service: "L'Amour Atelier Cloud Backend (Render)",
+            service: 'DaiLo Wedding Cloud Backend (Render)',
             engine: runtime.engine,
             persistent: runtime.persistent,
             api: `${origin}/api?action=ping`,
@@ -260,7 +260,7 @@ export async function createRenderServer({
 
   const server = http.createServer((nodeReq, nodeRes) => {
     Promise.resolve(handleNodeRequest(nodeReq, nodeRes)).catch(err => {
-      console.error("[L'Amour Atelier Backend] Unexpected request error:", err?.message || err);
+      console.error('[DaiLo Wedding Backend] Unexpected request error:', err?.message || err);
       try {
         if (!nodeRes.headersSent) {
           writeJson(nodeReq, nodeRes, 500, { ok: false, error: 'Internal Server Error' });
@@ -303,14 +303,14 @@ if (isMain) {
   createRenderServer()
     .then(async app => {
       const bound = await app.listen(port, '0.0.0.0');
-      console.log(`[L'Amour Atelier Backend] Listening on http://${bound.host}:${bound.port}`);
-      console.log(`[L'Amour Atelier Backend] Storage engine: ${app.runtime.engine} (persistent=${app.runtime.persistent})`);
+      console.log(`[DaiLo Wedding Backend] Listening on http://${bound.host}:${bound.port}`);
+      console.log(`[DaiLo Wedding Backend] Storage engine: ${app.runtime.engine} (persistent=${app.runtime.persistent})`);
       if (app.runtime.storageWarning) {
-        console.warn(`[L'Amour Atelier Backend] WARNING: ${app.runtime.storageWarning}`);
+        console.warn(`[DaiLo Wedding Backend] WARNING: ${app.runtime.storageWarning}`);
       }
 
       const shutdown = async sig => {
-        console.log(`[L'Amour Atelier Backend] Received ${sig}, shutting down cleanly...`);
+        console.log(`[DaiLo Wedding Backend] Received ${sig}, shutting down cleanly...`);
         await app.close();
         process.exit(0);
       };
@@ -318,7 +318,7 @@ if (isMain) {
       process.on('SIGINT', () => shutdown('SIGINT'));
     })
     .catch(err => {
-      console.error('[L\'Amour Atelier Backend] Fatal startup error:', err);
+      console.error('[DaiLo Wedding Backend] Fatal startup error:', err);
       process.exit(1);
     });
 }

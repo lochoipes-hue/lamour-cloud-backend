@@ -1,9 +1,9 @@
 {
   "name": "lamour-cloud-backend",
-  "version": "14.0.0",
+  "version": "15.0.0",
   "private": true,
   "type": "module",
-  "description": "L'Amour Atelier — Standalone Render Cloud Backend (Node.js + PostgreSQL / Persistent Disk + SePay MB Bank Webhook + Gemini AI Agent)",
+  "description": "DaiLo Wedding — Standalone Render Cloud Backend (Node.js + PostgreSQL / Persistent Disk + OTP + Facebook/Google OAuth + SePay MB Bank Webhook + Gemini AI Agent)",
   "engines": {
     "node": ">=20.0.0"
   },
